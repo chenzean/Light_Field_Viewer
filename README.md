@@ -15,14 +15,18 @@
 
 ## 运行方式
 
-### Python 直接运行
+### 方式一：直接双击 exe 运行（推荐）
+
+无需安装 Python 环境，双击 `LightFieldViewer.exe` 即可使用。
+
+### 方式二：Python 源码运行
 
 ```bash
 cd D:\Light_Field_Video\Light_Field_Viewer
 python main.py
 ```
 
-### 打包为 exe
+### 方式三：打包为 exe
 
 ```bash
 cd D:\Light_Field_Video\Light_Field_Viewer

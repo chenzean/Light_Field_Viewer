@@ -1,0 +1,13 @@
+@echo off
+chcp 65001 >nul
+echo ========================================
+echo Light Field Viewer V1 - Build exe
+echo ========================================
+
+pip install pyinstaller
+
+pyinstaller --onefile --windowed --name LightFieldViewer main.py
+
+echo.
+echo Done! exe: dist\LightFieldViewer.exe
+pause

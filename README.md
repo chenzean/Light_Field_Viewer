@@ -17,7 +17,7 @@
 
 ### 方式一：直接双击 exe 运行（推荐）
 
-无需安装 Python 环境，双击 `LightFieldViewer.exe` 即可使用。
+无需安装 Python 环境，从 [Releases](https://github.com/chenzean/Light_Field_Viewer/releases) 页面下载 `LightFieldViewer.exe`，双击即可使用。
 
 ### 方式二：Python 源码运行
 

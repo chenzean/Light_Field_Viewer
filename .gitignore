@@ -2,10 +2,19 @@
 .idea/
 .vscode/
 
+# Claude
+.claude/
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
 
 # Build artifacts
 build/
@@ -13,6 +22,16 @@ dist/
 *.spec
 *.exe
 
+# Egg / distribution
+*.egg-info/
+*.egg
+dist/
+
+# Logs
+*.log
+export_log.txt
+
 # OS
 Thumbs.db
 .DS_Store
+desktop.ini

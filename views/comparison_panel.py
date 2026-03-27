@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QSizePolicy, QApplication, QRubberBand, QTabWidget
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect, QTimer
 from PyQt5.QtGui import QPixmap, QFont, QCursor
 
 
@@ -29,6 +29,7 @@ class SAILabel(QLabel):
     wheel_signal = pyqtSignal(int)
     drag_delta = pyqtSignal(float, float)       # 平移增量 (原图像素)
     rect_drawn = pyqtSignal(int, int, int, int)  # 画框 (原图坐标)
+    focus_request = pyqtSignal()                 # 请求父面板获取焦点
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -80,6 +81,7 @@ class SAILabel(QLabel):
 
     # ---- 左键: 拖拽平移 ----
     def mousePressEvent(self, event):
+        self.focus_request.emit()
         if event.button() == Qt.LeftButton:
             self._dragging = True
             self._drag_start = event.pos()
@@ -245,6 +247,7 @@ class SAIGridTab(QWidget):
                 sai_lbl.wheel_signal.connect(self._on_wheel)
                 sai_lbl.drag_delta.connect(self._on_drag)
                 sai_lbl.rect_drawn.connect(lambda x, y, w, h: self.rect_drawn.emit(x, y, w, h))
+                sai_lbl.focus_request.connect(self.setFocus)
                 vbox.addWidget(sai_lbl)
                 container._sai_label = sai_lbl
                 container._title = title
@@ -385,6 +388,8 @@ class ZoomCompareTab(QWidget):
         self._methods = []
         self._rects = []
         self._crop_data = {}
+        self._residual_data = None
+        self._colorbar_pixmap = None
         self._init_ui()
 
     def _init_ui(self):
@@ -400,39 +405,48 @@ class ZoomCompareTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.scroll)
 
-        self._groups = []  # [(title_label, grid_widget, {method: ImageLabel})]
+        self._groups = []  # [[widget, ...], ...]  每组的所有 widget 列表
+
+        # resize 防抖定时器 (避免拖拽窗口时频繁重建)
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(150)
+        self._resize_timer.timeout.connect(self._on_resize_done)
 
     def resizeEvent(self, event):
-        """窗口大小变化时重新排列。"""
+        """窗口大小变化时防抖重排。"""
         super().resizeEvent(event)
+        if self._methods and self._rects:
+            self._resize_timer.start()
+
+    def _on_resize_done(self):
         if self._methods and self._rects:
             self._rebuild()
 
-    def update_zooms(self, methods, rects, crop_data):
+    def update_zooms(self, methods, rects, crop_data,
+                     residual_data=None, colorbar_pixmap=None):
         """更新数据并重建布局。"""
         self._methods = methods
         self._rects = rects
         self._crop_data = crop_data
+        self._residual_data = residual_data
+        self._colorbar_pixmap = colorbar_pixmap
         self._rebuild()
 
     def _rebuild(self):
         """根据当前面板宽度重建所有内容。"""
-        # 清除旧的
-        for title, grid_w, _ in self._groups:
-            self.main_layout.removeWidget(title)
-            self.main_layout.removeWidget(grid_w)
-            title.deleteLater()
-            grid_w.deleteLater()
+        # 清除旧的所有内容 (widget + stretch spacer)
         self._groups.clear()
-        # 移除 stretch
         while self.main_layout.count():
             item = self.main_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.deleteLater()
 
         methods = self._methods
         rects = self._rects
         crop_data = self._crop_data
+        residual_data = self._residual_data
 
         if not rects or not methods:
             return
@@ -441,11 +455,13 @@ class ZoomCompareTab(QWidget):
         panel_width = self.scroll.viewport().width()
         panel_height = self.scroll.viewport().height()
 
-        # 每个框组占用的高度 = panel_height / 框数 (大致)
+        # 每个框组占用的高度
         num_rects = len(rects)
-        group_height = max(200, panel_height // max(1, num_rects) - 30)
+        has_residual = residual_data is not None
+        rows_per_rect = 2 if has_residual else 1
+        group_height = max(200, panel_height // max(1, num_rects * rows_per_rect) - 30)
 
-        # 自动选择最优列数 (跟 SAI Tab 相同逻辑)
+        # 自动选择最优列数
         best_cols = 1
         best_score = 0
         for c in range(1, n + 1):
@@ -462,6 +478,8 @@ class ZoomCompareTab(QWidget):
 
         for i, r in enumerate(rects):
             color = r['color']
+            group_widgets = []
+
             # 标题
             title = QLabel(f"  矩形框 {i+1}  ({r['x']}, {r['y']}, {r['w']}, {r['h']})")
             title.setStyleSheet(
@@ -469,15 +487,15 @@ class ZoomCompareTab(QWidget):
                 f"font-weight: bold; font-size: 11px;")
             title.setMaximumHeight(20)
             self.main_layout.addWidget(title)
+            group_widgets.append(title)
 
-            # 网格
+            # 裁剪图网格
             grid_w = QWidget()
             grid = QGridLayout(grid_w)
             grid.setSpacing(4)
             grid.setContentsMargins(0, 0, 0, 0)
 
             num_rows = (n + best_cols - 1) // best_cols
-            labels = {}
             for j, m in enumerate(methods):
                 cell = QWidget()
                 vbox = QVBoxLayout(cell)
@@ -496,19 +514,85 @@ class ZoomCompareTab(QWidget):
                 img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 vbox.addWidget(img_lbl)
                 grid.addWidget(cell, j // best_cols, j % best_cols)
-                labels[m] = img_lbl
 
                 if m in crop_data and i < len(crop_data[m]):
                     img_lbl.set_image(crop_data[m][i])
 
-            # 等宽等高
             for c in range(best_cols):
                 grid.setColumnStretch(c, 1)
             for r_idx in range(num_rows):
                 grid.setRowStretch(r_idx, 1)
 
-            self.main_layout.addWidget(grid_w, 1)  # stretch=1 让网格均分空间
-            self._groups.append((title, grid_w, labels))
+            self.main_layout.addWidget(grid_w, 1)
+            group_widgets.append(grid_w)
+
+            # 残差图网格 (如果启用)
+            if has_residual:
+                res_title = QLabel(f"  残差图 (矩形框 {i+1})")
+                res_title.setStyleSheet(
+                    f"color: rgb({color[0]},{color[1]},{color[2]}); "
+                    f"font-weight: bold; font-size: 10px;")
+                res_title.setMaximumHeight(18)
+                self.main_layout.addWidget(res_title)
+                group_widgets.append(res_title)
+
+                # 残差网格 + 颜色条 水平排列
+                res_row_w = QWidget()
+                res_row_layout = QHBoxLayout(res_row_w)
+                res_row_layout.setSpacing(4)
+                res_row_layout.setContentsMargins(0, 0, 0, 0)
+
+                # 左侧: 残差图网格
+                res_grid_w = QWidget()
+                res_grid = QGridLayout(res_grid_w)
+                res_grid.setSpacing(4)
+                res_grid.setContentsMargins(0, 0, 0, 0)
+
+                res_methods = [m for m in methods if m != 'Ground_Truth']
+                n_res = len(res_methods)
+                for j, m in enumerate(res_methods):
+                    cell = QWidget()
+                    vbox = QVBoxLayout(cell)
+                    vbox.setSpacing(1)
+                    vbox.setContentsMargins(0, 0, 0, 0)
+                    name_lbl = QLabel(m)
+                    name_lbl.setAlignment(Qt.AlignCenter)
+                    name_lbl.setMaximumHeight(16)
+                    font = QFont()
+                    font.setPointSize(8)
+                    name_lbl.setFont(font)
+                    vbox.addWidget(name_lbl)
+                    img_lbl = ImageLabel()
+                    img_lbl.setStyleSheet(
+                        f"border: 2px solid rgb({color[0]},{color[1]},{color[2]});")
+                    img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                    vbox.addWidget(img_lbl)
+                    res_grid.addWidget(cell, j // best_cols, j % best_cols)
+
+                    if residual_data and m in residual_data and i < len(residual_data[m]):
+                        img_lbl.set_image(residual_data[m][i])
+
+                num_res_rows = (n_res + best_cols - 1) // best_cols
+                for c in range(best_cols):
+                    res_grid.setColumnStretch(c, 1)
+                for r_idx in range(num_res_rows):
+                    res_grid.setRowStretch(r_idx, 1)
+
+                res_row_layout.addWidget(res_grid_w, 1)
+
+                # 右侧: 颜色条
+                if self._colorbar_pixmap and not self._colorbar_pixmap.isNull():
+                    cb_lbl = ImageLabel()
+                    cb_lbl.setFixedWidth(60)
+                    cb_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+                    cb_lbl.setStyleSheet("border: none;")
+                    cb_lbl.set_image(self._colorbar_pixmap)
+                    res_row_layout.addWidget(cb_lbl)
+
+                self.main_layout.addWidget(res_row_w, 1)
+                group_widgets.append(res_row_w)
+
+            self._groups.append(group_widgets)
 
         self.main_layout.addStretch(0)
 
@@ -542,10 +626,12 @@ class EPICompareTab(QWidget):
 
     def update_epis(self, methods, epi_data):
         """更新 EPI 显示 — 竖向排列, 每个方法一行, 统一宽度。"""
-        # 清除旧的
-        for row_w, _, _ in self._rows:
-            self.vbox.removeWidget(row_w)
-            row_w.deleteLater()
+        # 清除旧内容 (含 addStretch 产生的 spacer)
+        while self.vbox.count():
+            item = self.vbox.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
         self._rows.clear()
 
         if not methods or not epi_data:
@@ -630,10 +716,20 @@ class ComparisonPanel(QWidget):
     def update_method_sai(self, method, pixmap):
         self.sai_tab.set_sai(method, pixmap)
 
-    def update_all_zooms(self, methods, rects, crop_data):
+    def update_all_zooms(self, methods, rects, crop_data,
+                         residual_data=None, colorbar_pixmap=None):
         """批量更新局部放大标签页。"""
-        self.zoom_tab.update_zooms(methods, rects, crop_data)
+        self.zoom_tab.update_zooms(
+            methods, rects, crop_data, residual_data, colorbar_pixmap)
 
     def update_all_epis(self, methods, epi_data):
         """批量更新 EPI 标签页。"""
         self.epi_tab.update_epis(methods, epi_data)
+
+    def set_epi_tab_visible(self, visible: bool):
+        """显示或隐藏 EPI 标签页。"""
+        idx = self.tabs.indexOf(self.epi_tab)
+        if visible and idx < 0:
+            self.tabs.addTab(self.epi_tab, "EPI 对比")
+        elif not visible and idx >= 0:
+            self.tabs.removeTab(idx)

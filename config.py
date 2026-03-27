@@ -2,7 +2,7 @@
 光场图像查看器 V1 — 全局配置与默认参数
 """
 
-VERSION = "1.0"
+VERSION = "1.0.2"
 
 # ---- 默认角度分辨率 ----
 DEFAULT_ANGULAR_U = 5
@@ -46,4 +46,6 @@ EXPORT_DIR_RECT_ANNOTATED = "01_rect_annotated"  # 带红框 + EPI 标记的 SAI
 EXPORT_DIR_ZOOM_CROP = "02_zoom_crop"            # 局部放大裁剪
 EXPORT_DIR_EPI_FULL = "03_epi_full"              # 完整 EPI
 EXPORT_DIR_EPI_CROP = "04_epi_crop"              # 裁剪后的局部 EPI
+EXPORT_DIR_RESIDUAL_ANNOTATED = "05_residual_annotated"  # 全图残差 + 矩形框
+EXPORT_DIR_RESIDUAL_CROP = "06_residual_crop"            # 局部残差 (带颜色条 + 边框)
 EXPORT_LOG_FILENAME = "export_log.txt"

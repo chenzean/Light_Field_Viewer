@@ -31,6 +31,8 @@ class LightFieldData:
         # 统一的帧显示列表 (按位置索引): ["帧1", "帧2", ...]
         # 或光场图像时为 ["(无帧)"]
         self._frame_display = {}  # {scene: [display_name, ...]}
+        # SAI 文件名映射缓存: {dir_path: {(u,v): filepath}}
+        self._sai_name_map = {}
 
     def scan_root(self, root_dir: str) -> dict:
         """扫描根目录, 自动检测目录结构。"""
@@ -39,6 +41,7 @@ class LightFieldData:
         self.methods = []
         self.scenes = set()
         self._frame_display = {}
+        self._sai_name_map = {}
 
         if not os.path.isdir(root_dir):
             return {}
@@ -128,10 +131,6 @@ class LightFieldData:
         """返回场景的统一帧显示列表 (用于 UI 下拉框)。"""
         return self._frame_display.get(scene, [])
 
-    def get_frame_count(self, scene: str) -> int:
-        """返回场景的帧数。"""
-        return len(self._frame_display.get(scene, []))
-
     def _resolve_dir(self, method: str, scene: str, frame_index: int) -> str:
         """根据方法、场景和帧位置索引, 解析实际的图像目录路径。
 
@@ -170,6 +169,68 @@ class LightFieldData:
                 v_max = max(v_max, v)
         return (u_max, v_max) if u_max > 0 else (5, 5)
 
+    def get_mli_scenes(self, mode: str = 'image') -> list:
+        """扫描根目录, 检测 MLI 场景。
+
+        光场图像模式: 场景 = Method 目录下的图像文件名 (不含扩展名)
+        光场视频模式: 场景 = Method 目录下包含图像文件的子目录名
+        """
+        if not self.root_dir:
+            return []
+        mli_scenes = set()
+        for method_name in self.methods:
+            method_path = os.path.join(self.root_dir, method_name)
+            if not os.path.isdir(method_path):
+                continue
+
+            if mode == 'image':
+                # Method/Scene.ext
+                for fname in os.listdir(method_path):
+                    name, ext = os.path.splitext(fname)
+                    if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                        fpath = os.path.join(method_path, fname)
+                        if os.path.isfile(fpath):
+                            mli_scenes.add(name)
+            else:
+                # Method/Scene/ 下有图像文件
+                for dname in os.listdir(method_path):
+                    dpath = os.path.join(method_path, dname)
+                    if not os.path.isdir(dpath):
+                        continue
+                    # 检查目录中是否有图像文件 (排除 SAI 格式)
+                    sai_pattern = re.compile(r'^\d+_\d+\.\w+$')
+                    for fname in os.listdir(dpath):
+                        if sai_pattern.match(fname):
+                            continue
+                        _, ext = os.path.splitext(fname)
+                        if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                            if os.path.isfile(os.path.join(dpath, fname)):
+                                mli_scenes.add(dname)
+                                break
+
+        return sorted(mli_scenes)
+
+    def get_mli_frame_list(self, method: str, scene: str) -> list:
+        """获取 MLI 视频模式下的帧文件名列表 (用于 UI 显示)。"""
+        if not self.root_dir:
+            return []
+        scene_path = os.path.join(self.root_dir, method, scene)
+        if not os.path.isdir(scene_path):
+            return []
+        sai_pattern = re.compile(r'^\d+_\d+\.\w+$')
+        frames = []
+        try:
+            for fname in sorted(os.listdir(scene_path)):
+                if sai_pattern.match(fname):
+                    continue
+                _, ext = os.path.splitext(fname)
+                if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                    if os.path.isfile(os.path.join(scene_path, fname)):
+                        frames.append(os.path.splitext(fname)[0])
+        except (PermissionError, OSError):
+            pass
+        return frames
+
     def _find_any_image_dir(self) -> str:
         """找到任意一个有效的图像目录。"""
         for m in self.methods:
@@ -178,6 +239,27 @@ class LightFieldData:
                 if d:
                     return d
         return None
+
+    def _build_sai_filename_map(self, dir_path: str) -> dict:
+        """扫描目录, 建立 {(u,v): filepath} 映射, 支持零填充文件名。"""
+        if dir_path in self._sai_name_map:
+            return self._sai_name_map[dir_path]
+
+        name_map = {}
+        pattern = re.compile(r'^(\d+)_(\d+)\.(\w+)$')
+        try:
+            for fname in os.listdir(dir_path):
+                m = pattern.match(fname)
+                if m:
+                    ext = '.' + m.group(3)
+                    if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                        u_val, v_val = int(m.group(1)), int(m.group(2))
+                        name_map[(u_val, v_val)] = os.path.join(dir_path, fname)
+        except (PermissionError, OSError):
+            pass
+
+        self._sai_name_map[dir_path] = name_map
+        return name_map
 
     def load_sai(self, method: str, scene: str, frame_index: int,
                  u: int, v: int) -> np.ndarray:
@@ -196,11 +278,66 @@ class LightFieldData:
         if not dir_path:
             return None
 
-        for ext in SUPPORTED_IMAGE_EXTENSIONS:
-            fpath = os.path.join(dir_path, f"{u}_{v}{ext}")
-            if os.path.exists(fpath):
-                img = Image.open(fpath).convert('RGB')
+        name_map = self._build_sai_filename_map(dir_path)
+        fpath = name_map.get((u, v))
+        if fpath and os.path.exists(fpath):
+            img = Image.open(fpath).convert('RGB')
+            return np.array(img)
+        return None
+
+    def load_mli(self, method: str, scene: str,
+                 frame_index: int = 0, mode: str = 'image') -> np.ndarray:
+        """加载微透镜图像 (Micro-Lens Image)。
+
+        光场图像模式: {root}/{method}/{scene}.{ext}
+        光场视频模式: {root}/{method}/{scene}/{帧文件名}.{ext}
+                     帧文件按排序后位置索引匹配
+
+        参数:
+            method: 方法名
+            scene: 场景名
+            frame_index: 帧位置索引 (0-based, 仅视频模式)
+            mode: 'image' 或 'video'
+
+        返回:
+            RGB numpy 数组, shape=(H, W, 3), dtype=uint8, 或 None
+        """
+        if not self.root_dir:
+            return None
+
+        method_path = os.path.join(self.root_dir, method)
+
+        if mode == 'image':
+            # 光场图像: Method/Scene.ext
+            for ext in SUPPORTED_IMAGE_EXTENSIONS:
+                fpath = os.path.join(method_path, f"{scene}{ext}")
+                if os.path.exists(fpath):
+                    img = Image.open(fpath).convert('RGB')
+                    return np.array(img)
+        else:
+            # 光场视频: Method/Scene/帧文件.ext
+            scene_path = os.path.join(method_path, scene)
+            if not os.path.isdir(scene_path):
+                return None
+            # 扫描场景目录下的图像文件 (排除 SAI 格式的 {u}_{v})
+            sai_pattern = re.compile(r'^\d+_\d+\.\w+$')
+            frame_files = []
+            try:
+                for fname in sorted(os.listdir(scene_path)):
+                    if sai_pattern.match(fname):
+                        continue
+                    _, ext = os.path.splitext(fname)
+                    if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                        fpath = os.path.join(scene_path, fname)
+                        if os.path.isfile(fpath):
+                            frame_files.append(fpath)
+            except (PermissionError, OSError):
+                return None
+
+            if 0 <= frame_index < len(frame_files):
+                img = Image.open(frame_files[frame_index]).convert('RGB')
                 return np.array(img)
+
         return None
 
     def load_light_field(self, method: str, scene: str, frame_index: int,

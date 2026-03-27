@@ -25,11 +25,13 @@ def write_export_log(filepath: str, params: dict):
         f.write("【数据设置】\n")
         f.write(f"  数据根目录:   {params.get('data_root', 'N/A')}\n")
         f.write(f"  导出目录:     {params.get('export_dir', 'N/A')}\n")
+        f.write(f"  可视化模式:   {params.get('vis_mode', 'sai')}\n")
         f.write(f"  角度分辨率:   {params.get('angular_u', '?')} x {params.get('angular_v', '?')}\n")
         f.write(f"  场景:         {params.get('scene', 'N/A')}\n")
-        f.write(f"  帧/样本:      {params.get('frame', 'N/A')}\n")
+        f.write(f"  帧索引:       {params.get('frame_index', 'N/A')}\n")
         f.write(f"  角度坐标:     u={params.get('u', '?')}, v={params.get('v', '?')}\n")
-        f.write(f"  选中方法:     {', '.join(params.get('methods', []))}\n\n")
+        f.write(f"  选中方法:     {', '.join(params.get('methods', []))}\n")
+        f.write(f"  残差图:       {params.get('residual_enabled', False)}\n\n")
 
         # 矩形框参数
         rects = params.get('rects', [])

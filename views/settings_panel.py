@@ -19,6 +19,7 @@ class SettingsPanel(QWidget):
 
     # ---- 信号 ----
     mode_changed = pyqtSignal(str)             # 'image' 或 'video'
+    vis_mode_changed = pyqtSignal(str)         # 'sai' 或 'mli'
     data_root_changed = pyqtSignal(str)
     export_dir_changed = pyqtSignal(str)
     angular_resolution_changed = pyqtSignal(int, int)
@@ -32,6 +33,7 @@ class SettingsPanel(QWidget):
     rect_selected = pyqtSignal(int)            # 选中第 i 个框
     rect_params_changed = pyqtSignal(int, dict)  # 第 i 个框参数变化
     epi_params_changed = pyqtSignal(dict)
+    residual_changed = pyqtSignal(bool)        # 残差图开关
     refresh_requested = pyqtSignal()
     export_requested = pyqtSignal()
 
@@ -49,6 +51,21 @@ class SettingsPanel(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setSpacing(6)
+
+        # ---- 可视化模式选择 ----
+        grp_vis = QGroupBox("可视化模式")
+        hbox_vis = QHBoxLayout()
+        self.radio_sai = QRadioButton("子孔径图像 (SAI)")
+        self.radio_mli = QRadioButton("微透镜图像 (MLI)")
+        self.radio_sai.setChecked(True)
+        self.btn_grp_vis = QButtonGroup()
+        self.btn_grp_vis.addButton(self.radio_sai, 0)
+        self.btn_grp_vis.addButton(self.radio_mli, 1)
+        self.btn_grp_vis.buttonClicked.connect(self._on_vis_mode_changed)
+        hbox_vis.addWidget(self.radio_sai)
+        hbox_vis.addWidget(self.radio_mli)
+        grp_vis.setLayout(hbox_vis)
+        layout.addWidget(grp_vis)
 
         # ---- 数据类型选择 ----
         grp_mode = QGroupBox("数据类型")
@@ -93,8 +110,9 @@ class SettingsPanel(QWidget):
         grp_dir.setLayout(vbox)
         layout.addWidget(grp_dir)
 
-        # ---- 角度分辨率 ----
-        grp_angular = QGroupBox("角度分辨率")
+        # ---- 角度分辨率 (MLI 模式下隐藏) ----
+        self.grp_angular = QGroupBox("角度分辨率")
+        grp_angular = self.grp_angular
         hbox3 = QHBoxLayout()
         self.spin_u_max = QSpinBox()
         self.spin_u_max.setRange(1, 20)
@@ -130,8 +148,10 @@ class SettingsPanel(QWidget):
         self.combo_frame.currentIndexChanged.connect(self._on_frame_changed)
         hbox_frame.addWidget(self.combo_frame)
         vbox2.addWidget(self.hbox_frame_widget)
-        # 角度坐标
-        hbox_uv = QHBoxLayout()
+        # 角度坐标 (MLI 模式下隐藏)
+        self.widget_uv = QWidget()
+        hbox_uv = QHBoxLayout(self.widget_uv)
+        hbox_uv.setContentsMargins(0, 0, 0, 0)
         hbox_uv.addWidget(QLabel("u:"))
         self.spin_u = QSpinBox()
         self.spin_u.setRange(1, cfg.DEFAULT_ANGULAR_U)
@@ -144,7 +164,7 @@ class SettingsPanel(QWidget):
         hbox_uv.addWidget(self.spin_v)
         self.spin_u.valueChanged.connect(self._on_uv_changed)
         self.spin_v.valueChanged.connect(self._on_uv_changed)
-        vbox2.addLayout(hbox_uv)
+        vbox2.addWidget(self.widget_uv)
         grp_sel.setLayout(vbox2)
         layout.addWidget(grp_sel)
 
@@ -236,8 +256,19 @@ class SettingsPanel(QWidget):
         grp_rect.setLayout(vbox4)
         layout.addWidget(grp_rect)
 
-        # ---- EPI 设置 ----
-        grp_epi = QGroupBox("EPI 设置")
+        # ---- 残差图设置 ----
+        grp_residual = QGroupBox("残差图")
+        vbox_res = QVBoxLayout()
+        self.chk_residual = QCheckBox("显示残差图 (与 Ground_Truth 对比)")
+        self.chk_residual.setChecked(False)
+        self.chk_residual.stateChanged.connect(self._on_residual_changed)
+        vbox_res.addWidget(self.chk_residual)
+        grp_residual.setLayout(vbox_res)
+        layout.addWidget(grp_residual)
+
+        # ---- EPI 设置 (MLI 模式下隐藏) ----
+        self.grp_epi = QGroupBox("EPI 设置")
+        grp_epi = self.grp_epi
         vbox5 = QVBoxLayout()
         self.chk_epi = QCheckBox("显示 EPI")
         self.chk_epi.setChecked(False)
@@ -275,6 +306,18 @@ class SettingsPanel(QWidget):
         grp_epi.setLayout(vbox5)
         layout.addWidget(grp_epi)
 
+        # ---- 导出 DPI 设置 ----
+        grp_dpi = QGroupBox("导出 DPI")
+        hbox_dpi = QHBoxLayout()
+        hbox_dpi.addWidget(QLabel("颜色条 DPI:"))
+        self.spin_dpi = QSpinBox()
+        self.spin_dpi.setRange(50, 600)
+        self.spin_dpi.setValue(150)
+        self.spin_dpi.setSingleStep(50)
+        hbox_dpi.addWidget(self.spin_dpi)
+        grp_dpi.setLayout(hbox_dpi)
+        layout.addWidget(grp_dpi)
+
         # ---- 按钮 ----
         hbox_actions = QHBoxLayout()
         btn_refresh = QPushButton("刷新")
@@ -291,6 +334,24 @@ class SettingsPanel(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
+
+    # ---- 可视化模式切换 ----
+    def _on_vis_mode_changed(self):
+        if self._building:
+            return
+        is_mli = self.radio_mli.isChecked()
+        # MLI 模式下隐藏角度分辨率、角度坐标和 EPI 设置
+        self.grp_angular.setVisible(not is_mli)
+        self.widget_uv.setVisible(not is_mli)
+        self.grp_epi.setVisible(not is_mli)
+        vis_mode = 'mli' if is_mli else 'sai'
+        self.vis_mode_changed.emit(vis_mode)
+
+    # ---- 残差开关 ----
+    def _on_residual_changed(self):
+        if self._building:
+            return
+        self.residual_changed.emit(self.chk_residual.isChecked())
 
     # ---- 模式切换 ----
     def _on_mode_changed(self):
@@ -477,6 +538,15 @@ class SettingsPanel(QWidget):
             'crop_end': self.spin_epi_crop_end.value(),
             'stretch': self.spin_epi_stretch.value(),
         }
+
+    def get_export_dpi(self) -> int:
+        return self.spin_dpi.value()
+
+    def get_vis_mode(self) -> str:
+        return 'mli' if self.radio_mli.isChecked() else 'sai'
+
+    def get_residual_enabled(self) -> bool:
+        return self.chk_residual.isChecked()
 
     def get_mode(self) -> str:
         return 'video' if self.radio_video.isChecked() else 'image'

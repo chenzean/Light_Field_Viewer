@@ -6,7 +6,7 @@ echo ========================================
 
 pip install pyinstaller
 
-pyinstaller --onefile --windowed --name LightFieldViewer main.py
+pyinstaller LightFieldViewer.spec
 
 echo.
 echo Done! exe: dist\LightFieldViewer.exe

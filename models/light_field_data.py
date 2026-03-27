@@ -87,6 +87,9 @@ class LightFieldData:
             if method_dict:
                 self.structure[method_name] = method_dict
                 self.methods.append(method_name)
+            elif self._has_mli_files(method_path):
+                # 纯 MLI 数据集: 无 SAI 子目录, 但有图像文件
+                self.methods.append(method_name)
 
         self.scenes = sorted(self.scenes)
 
@@ -117,6 +120,30 @@ class LightFieldData:
                     _, ext = os.path.splitext(fname)
                     if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
                         return True
+        except (PermissionError, OSError):
+            pass
+        return False
+
+    def _has_mli_files(self, method_path: str) -> bool:
+        """检查方法目录是否包含 MLI 图像文件 (图像模式或视频模式)。"""
+        sai_pattern = re.compile(r'^\d+_\d+\.\w+$')
+        try:
+            for fname in os.listdir(method_path):
+                fpath = os.path.join(method_path, fname)
+                # 图像模式: Method/Scene.ext
+                if os.path.isfile(fpath):
+                    _, ext = os.path.splitext(fname)
+                    if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                        return True
+                # 视频模式: Method/Scene/frame.ext
+                elif os.path.isdir(fpath):
+                    for sub_fname in os.listdir(fpath):
+                        if sai_pattern.match(sub_fname):
+                            continue
+                        _, ext = os.path.splitext(sub_fname)
+                        if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                            if os.path.isfile(os.path.join(fpath, sub_fname)):
+                                return True
         except (PermissionError, OSError):
             pass
         return False
@@ -178,7 +205,13 @@ class LightFieldData:
         if not self.root_dir:
             return []
         mli_scenes = set()
-        for method_name in self.methods:
+        try:
+            all_methods = [d for d in sorted(os.listdir(self.root_dir))
+                           if os.path.isdir(os.path.join(self.root_dir, d))
+                           and not d.startswith('.')]
+        except (PermissionError, OSError):
+            return []
+        for method_name in all_methods:
             method_path = os.path.join(self.root_dir, method_name)
             if not os.path.isdir(method_path):
                 continue

@@ -26,7 +26,7 @@ class SAILabel(QLabel):
       - 左键拖拽 → 平移
       - 右键拖拽 → 画矩形框
     """
-    wheel_signal = pyqtSignal(int)
+    wheel_signal = pyqtSignal(int, float, float)  # delta, rel_x(0~1), rel_y(0~1)
     drag_delta = pyqtSignal(float, float)       # 平移增量 (原图像素)
     rect_drawn = pyqtSignal(int, int, int, int)  # 画框 (原图坐标)
     focus_request = pyqtSignal()                 # 请求父面板获取焦点
@@ -76,7 +76,11 @@ class SAILabel(QLabel):
                 self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
 
     def wheelEvent(self, event):
-        self.wheel_signal.emit(event.angleDelta().y())
+        pos = event.pos()
+        w, h = self.width(), self.height()
+        rel_x = pos.x() / w if w > 0 else 0.5
+        rel_y = pos.y() / h if h > 0 else 0.5
+        self.wheel_signal.emit(event.angleDelta().y(), rel_x, rel_y)
         event.accept()
 
     # ---- 左键: 拖拽平移 ----
@@ -314,14 +318,28 @@ class SAIGridTab(QWidget):
                 self._img_h = pixmap.height()
             self._apply_viewport_one(method)
 
-    def _on_wheel(self, delta):
+    def _on_wheel(self, delta, rel_x, rel_y):
+        old_zoom = self._zoom
         if delta > 0:
             self._zoom = min(self._zoom * 1.25, 20.0)
         else:
             self._zoom = max(self._zoom / 1.25, 1.0)
+
         if self._zoom <= 1.0:
             self._pan_x = 0
             self._pan_y = 0
+        else:
+            # 鼠标在原图中的坐标 (缩放前)
+            old_vw = self._img_w / old_zoom if old_zoom > 1.0 else self._img_w
+            old_vh = self._img_h / old_zoom if old_zoom > 1.0 else self._img_h
+            img_x = self._pan_x + rel_x * old_vw
+            img_y = self._pan_y + rel_y * old_vh
+            # 新视口大小
+            new_vw = self._img_w / self._zoom
+            new_vh = self._img_h / self._zoom
+            # 让鼠标位置保持不变
+            self._pan_x = img_x - rel_x * new_vw
+            self._pan_y = img_y - rel_y * new_vh
         self._apply_viewport_all()
 
     def _on_drag(self, dx, dy):

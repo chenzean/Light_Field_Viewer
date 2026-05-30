@@ -134,14 +134,23 @@ class AppController:
     # ==== 模式 ====
     def on_mode_changed(self, mode):
         self.mode = mode
+        # image/video 切换会改变同一 (method, scene, frame_index) 解析到的文件,
+        # 而 SAI/光场缓存 key 不含 mode, 故需全部清空
         self._mli_cache.clear()
         self._sai_cache.clear()
+        self._lf_cache.clear()
+        self._lf_cache_keys.clear()
         if self.data_root:
             self.on_data_root_changed(self.data_root)
 
     # ==== 数据目录 ====
     def on_data_root_changed(self, path):
         self.data_root = path
+        # 缓存 key 不含根目录, 换目录后必须清空, 否则同名 method/scene 会命中旧数据
+        self._sai_cache.clear()
+        self._mli_cache.clear()
+        self._lf_cache.clear()
+        self._lf_cache_keys.clear()
         self.window.statusBar().showMessage(f"正在扫描: {path} ...")
 
         self.lf_data.scan_root(path)
@@ -214,9 +223,8 @@ class AppController:
         self.refresh_all()
 
     def on_scene_changed(self, scene):
+        # scene 已包含在缓存 key 中, 无需清空缓存 (来回切换可命中缓存, 免读盘)
         self.current_scene = scene
-        self._sai_cache.clear()
-        self._mli_cache.clear()
         if self.vis_mode == 'mli':
             self._update_mli_frame_list()
         else:
@@ -224,13 +232,13 @@ class AppController:
         self.refresh_all()
 
     def on_frame_changed(self, frame_index):
+        # frame_index 已包含在缓存 key 中, 无需清空缓存
         self.current_frame_index = frame_index
-        self._sai_cache.clear()
         self.refresh_all()
 
     def on_uv_changed(self, u, v):
+        # u, v 已包含在 SAI 缓存 key 中, 无需清空缓存 (浏览视角时免重复读盘)
         self.current_u, self.current_v = u, v
-        self._sai_cache.clear()
         self.window.statusBar().showMessage(f"切换视角: u={u}, v={v}")
         self.refresh_all()
 
@@ -289,7 +297,7 @@ class AppController:
 
     # ==== 核心刷新 (防抖) ====
     def refresh_all(self):
-        """触发延迟刷新 (100ms 防抖)。"""
+        """触发延迟刷新 (200ms 防抖)。"""
         self._refresh_timer.start()
 
     def _do_refresh(self):
@@ -314,32 +322,37 @@ class AppController:
         return self.comparison.tabs.currentIndex()
 
     def _do_refresh_sai(self):
-        """SAI 模式刷新。"""
+        """SAI 模式刷新 — 只刷新当前可见的标签页。
+
+        切换标签页会触发 refresh_all (currentChanged 信号), 因此目标标签页
+        在切过去时一定会被刷新, 无需在后台为不可见的标签页做计算。
+        """
         tab = self._current_tab_index()
 
-        # Tab 1: SAI 全图 (总是刷新, 因为是主视图)
-        for method in self.selected_methods:
-            sai = self._load_sai(method)
-            if sai is None:
-                continue
-            annotated = draw_multiple_rectangles(sai, self.rects) if self.rects else sai.copy()
-            if self.epi_params.get('enabled', False):
-                annotated = draw_epi_region(
-                    annotated,
-                    self.epi_params['spatial_pos'],
-                    self.epi_params['crop_start'],
-                    self.epi_params['crop_end'],
-                    self.epi_params['orientation'],
-                    line_color=(0, 0, 255),
-                    thickness=2)
-            self.comparison.update_method_sai(method, ndarray_to_qpixmap(annotated))
+        # Tab 0: SAI 全图
+        if tab == 0:
+            for method in self.selected_methods:
+                sai = self._load_sai(method)
+                if sai is None:
+                    continue
+                annotated = draw_multiple_rectangles(sai, self.rects) if self.rects else sai.copy()
+                if self.epi_params.get('enabled', False):
+                    annotated = draw_epi_region(
+                        annotated,
+                        self.epi_params['spatial_pos'],
+                        self.epi_params['crop_start'],
+                        self.epi_params['crop_end'],
+                        self.epi_params['orientation'],
+                        line_color=(0, 0, 255),
+                        thickness=2)
+                self.comparison.update_method_sai(method, ndarray_to_qpixmap(annotated))
 
-        # Tab 2: 局部放大 + 残差 (当前 tab 或有矩形框时刷新)
-        if tab == 1 or self.rects:
+        # Tab 1: 局部放大 + 残差
+        elif tab == 1:
             self._refresh_zoom_tab(loader=self._load_sai)
 
-        # Tab 3: EPI (仅当前 tab 或 EPI 启用时刷新)
-        if tab == 2 or self.epi_params.get('enabled', False):
+        # Tab 2: EPI
+        elif tab == 2:
             epi_data = {}
             if self.epi_params.get('enabled', False):
                 for method in self.selected_methods:
@@ -347,21 +360,21 @@ class AppController:
             self.comparison.update_all_epis(self.selected_methods, epi_data)
 
     def _do_refresh_mli(self):
-        """MLI 模式刷新。"""
-        # Tab 1: MLI 全图
-        for method in self.selected_methods:
-            mli = self._load_mli(method)
-            if mli is None:
-                continue
-            annotated = draw_multiple_rectangles(mli, self.rects) if self.rects else mli.copy()
-            self.comparison.update_method_sai(method, ndarray_to_qpixmap(annotated))
+        """MLI 模式刷新 — 只刷新当前可见的标签页 (MLI 模式无 EPI 标签)。"""
+        tab = self._current_tab_index()
 
-        # Tab 2: 局部放大 + 残差
-        if self._current_tab_index() == 1 or self.rects:
+        # Tab 0: MLI 全图
+        if tab == 0:
+            for method in self.selected_methods:
+                mli = self._load_mli(method)
+                if mli is None:
+                    continue
+                annotated = draw_multiple_rectangles(mli, self.rects) if self.rects else mli.copy()
+                self.comparison.update_method_sai(method, ndarray_to_qpixmap(annotated))
+
+        # Tab 1: 局部放大 + 残差
+        elif tab == 1:
             self._refresh_zoom_tab(loader=self._load_mli)
-
-        # Tab 3: EPI 不可用
-        self.comparison.update_all_epis(self.selected_methods, {})
 
     def _refresh_zoom_tab(self, loader):
         """刷新局部放大标签页 (共用逻辑, loader 为 _load_sai 或 _load_mli)。"""

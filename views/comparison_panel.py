@@ -53,8 +53,12 @@ class SAILabel(QLabel):
     def set_original_pixmap(self, pixmap):
         self._original_pixmap = pixmap
 
-    def apply_viewport(self, vx, vy, vw, vh):
-        """显示原图中 (vx, vy, vw, vh) 区域, 填满整个 Label。"""
+    def apply_viewport(self, vx, vy, vw, vh, smooth=True):
+        """显示原图中 (vx, vy, vw, vh) 区域, 填满整个 Label。
+
+        smooth=False 时用快速插值 (拖拽/缩放过程中, 避免卡顿),
+        smooth=True 时用高质量平滑插值 (交互停止后的最终呈现)。
+        """
         self._vx, self._vy, self._vw, self._vh = vx, vy, vw, vh
         if self._original_pixmap is None or self._original_pixmap.isNull():
             return
@@ -63,17 +67,19 @@ class SAILabel(QLabel):
         vy = max(0, min(vy, oh - 1))
         vw = max(1, min(vw, ow - vx))
         vh = max(1, min(vh, oh - vy))
+        mode = Qt.SmoothTransformation if smooth else Qt.FastTransformation
         cropped = self._original_pixmap.copy(vx, vy, vw, vh)
         super().setPixmap(cropped.scaled(
-            self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+            self.size(), Qt.IgnoreAspectRatio, mode))
 
-    def show_full(self):
+    def show_full(self, smooth=True):
         if self._original_pixmap and not self._original_pixmap.isNull():
             self._vx, self._vy = 0, 0
             self._vw = self._original_pixmap.width()
             self._vh = self._original_pixmap.height()
+            mode = Qt.SmoothTransformation if smooth else Qt.FastTransformation
             super().setPixmap(self._original_pixmap.scaled(
-                self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+                self.size(), Qt.IgnoreAspectRatio, mode))
 
     def wheelEvent(self, event):
         pos = event.pos()
@@ -207,8 +213,25 @@ class SAIGridTab(QWidget):
         self._img_w = 512
         self._img_h = 512
 
+        # 交互期间 (拖拽/缩放/键盘平移) 用快速插值, 停下后再做一次高质量重绘
+        self._fast_mode = False
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(140)
+        self._settle_timer.timeout.connect(self._on_interaction_settled)
+
         self.setFocusPolicy(Qt.StrongFocus)
         self._init_ui()
+
+    def _begin_interaction(self):
+        """标记进入交互状态 (使用快速插值), 并重启停顿计时器。"""
+        self._fast_mode = True
+        self._settle_timer.start()
+
+    def _on_interaction_settled(self):
+        """交互停顿后, 用高质量插值重绘一次。"""
+        self._fast_mode = False
+        self._apply_viewport_all()
 
     def _init_ui(self):
         self.scroll = QScrollArea()
@@ -224,6 +247,9 @@ class SAIGridTab(QWidget):
         layout.addWidget(self.scroll)
 
     def set_methods(self, methods):
+        # 方法列表未变化时直接返回, 避免每次刷新都重建网格
+        if methods == self._method_order and all(m in self.labels for m in methods):
+            return
         # 移除旧的
         for name in list(self.labels.keys()):
             if name not in methods:
@@ -319,6 +345,7 @@ class SAIGridTab(QWidget):
             self._apply_viewport_one(method)
 
     def _on_wheel(self, delta, rel_x, rel_y):
+        self._begin_interaction()
         old_zoom = self._zoom
         if delta > 0:
             self._zoom = min(self._zoom * 1.25, 20.0)
@@ -343,6 +370,7 @@ class SAIGridTab(QWidget):
         self._apply_viewport_all()
 
     def _on_drag(self, dx, dy):
+        self._begin_interaction()
         self._pan_x += dx
         self._pan_y += dy
         self._apply_viewport_all()
@@ -361,6 +389,7 @@ class SAIGridTab(QWidget):
         elif event.key() == Qt.Key_Home:
             self._zoom = 1.0; self._pan_x = 0; self._pan_y = 0; moved = True
         if moved:
+            self._begin_interaction()
             self._apply_viewport_all()
             event.accept()
         else:
@@ -380,8 +409,9 @@ class SAIGridTab(QWidget):
         if method not in self.labels:
             return
         sai_lbl = self.labels[method]._sai_label
+        smooth = not self._fast_mode
         if self._zoom <= 1.0:
-            sai_lbl.show_full()
+            sai_lbl.show_full(smooth=smooth)
         else:
             vw = self._img_w / self._zoom
             vh = self._img_h / self._zoom
@@ -390,7 +420,7 @@ class SAIGridTab(QWidget):
             self._pan_x = max(0, min(self._pan_x, max_px))
             self._pan_y = max(0, min(self._pan_y, max_py))
             sai_lbl.apply_viewport(
-                int(self._pan_x), int(self._pan_y), int(vw), int(vh))
+                int(self._pan_x), int(self._pan_y), int(vw), int(vh), smooth=smooth)
 
 
 # ===========================================================================
@@ -424,6 +454,7 @@ class ZoomCompareTab(QWidget):
         layout.addWidget(self.scroll)
 
         self._groups = []  # [[widget, ...], ...]  每组的所有 widget 列表
+        self._last_cols = -1  # 上次重建时采用的列数, 用于判断 resize 是否需要重建
 
         # resize 防抖定时器 (避免拖拽窗口时频繁重建)
         self._resize_timer = QTimer()
@@ -438,8 +469,39 @@ class ZoomCompareTab(QWidget):
             self._resize_timer.start()
 
     def _on_resize_done(self):
-        if self._methods and self._rects:
-            self._rebuild()
+        if not (self._methods and self._rects):
+            return
+        # 列数不变时, 现有 widget 会随 layout stretch 自动缩放, 无需销毁重建
+        if self._compute_best_cols() == self._last_cols:
+            return
+        self._rebuild()
+
+    def _compute_best_cols(self):
+        """根据当前面板尺寸与数据量, 计算最优列数 (与 _rebuild 中逻辑一致)。"""
+        n = len(self._methods)
+        if n == 0:
+            return 1
+        panel_width = self.scroll.viewport().width()
+        panel_height = self.scroll.viewport().height()
+        num_rects = len(self._rects)
+        has_residual = self._residual_data is not None
+        rows_per_rect = 2 if has_residual else 1
+        group_height = max(200, panel_height // max(1, num_rects * rows_per_rect) - 30)
+
+        best_cols = 1
+        best_score = 0
+        for c in range(1, n + 1):
+            rows = (n + c - 1) // c
+            cell_w = panel_width / c
+            cell_h = group_height / rows
+            if cell_w < self.COLUMN_MIN_WIDTH:
+                continue
+            aspect = min(cell_w, cell_h) / max(cell_w, cell_h) if max(cell_w, cell_h) > 0 else 0
+            score = cell_w * cell_h * aspect
+            if score > best_score:
+                best_score = score
+                best_cols = c
+        return best_cols
 
     def update_zooms(self, methods, rects, crop_data,
                      residual_data=None, colorbar_pixmap=None):
@@ -470,29 +532,11 @@ class ZoomCompareTab(QWidget):
             return
 
         n = len(methods)
-        panel_width = self.scroll.viewport().width()
-        panel_height = self.scroll.viewport().height()
-
-        # 每个框组占用的高度
-        num_rects = len(rects)
         has_residual = residual_data is not None
-        rows_per_rect = 2 if has_residual else 1
-        group_height = max(200, panel_height // max(1, num_rects * rows_per_rect) - 30)
 
-        # 自动选择最优列数
-        best_cols = 1
-        best_score = 0
-        for c in range(1, n + 1):
-            rows = (n + c - 1) // c
-            cell_w = panel_width / c
-            cell_h = group_height / rows
-            if cell_w < self.COLUMN_MIN_WIDTH:
-                continue
-            aspect = min(cell_w, cell_h) / max(cell_w, cell_h) if max(cell_w, cell_h) > 0 else 0
-            score = cell_w * cell_h * aspect
-            if score > best_score:
-                best_score = score
-                best_cols = c
+        # 自动选择最优列数 (并记录, 供 resize 时判断是否需要重建)
+        best_cols = self._compute_best_cols()
+        self._last_cols = best_cols
 
         for i, r in enumerate(rects):
             color = r['color']

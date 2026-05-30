@@ -6,7 +6,8 @@ import numpy as np
 
 
 def draw_rectangle(image: np.ndarray, x: int, y: int, w: int, h: int,
-                   color: tuple = (255, 0, 0), thickness: int = 3) -> np.ndarray:
+                   color: tuple = (255, 0, 0), thickness: int = 3,
+                   inplace: bool = False) -> np.ndarray:
     """在图像上绘制矩形框。
 
     参数:
@@ -15,11 +16,12 @@ def draw_rectangle(image: np.ndarray, x: int, y: int, w: int, h: int,
         w, h: 矩形宽高
         color: RGB 颜色元组
         thickness: 线条粗细
+        inplace: True 时直接在传入数组上绘制 (避免拷贝), 否则绘制在副本上
 
     返回:
-        绘制了矩形框的图像副本
+        绘制了矩形框的图像 (inplace=True 时为传入数组本身, 否则为副本)
     """
-    img = image.copy()
+    img = image if inplace else image.copy()
     img_h, img_w = img.shape[:2]
 
     # 计算四条边的范围 (向外扩展 thickness)
@@ -70,10 +72,11 @@ def draw_multiple_rectangles(image: np.ndarray, rects: list) -> np.ndarray:
     返回:
         绘制了所有矩形框的图像副本
     """
+    # 只拷贝一次, 之后所有框就地绘制 (避免每个框各拷贝一次全图)
     img = image.copy()
     for r in rects:
-        img = draw_rectangle(img, r['x'], r['y'], r['w'], r['h'],
-                             r['color'], r['thickness'])
+        draw_rectangle(img, r['x'], r['y'], r['w'], r['h'],
+                       r['color'], r['thickness'], inplace=True)
     return img
 
 

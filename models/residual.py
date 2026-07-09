@@ -12,40 +12,41 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 
 def compute_residual(img: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """计算残差 (绝对差值), 转为单通道灰度图。
+    """计算归一化残差 (绝对差值), 转为单通道图。
 
     参数:
         img: 待比较图像, shape=(H, W, 3), dtype=uint8
         ref: 参考图像 (Ground_Truth), shape=(H, W, 3), dtype=uint8
 
     返回:
-        单通道残差图, shape=(H, W), dtype=uint8, 值域 [0, 255]
+        单通道残差图, shape=(H, W), dtype=float32, 值域 [0, 1]
     """
     # 确保尺寸一致
     h = min(img.shape[0], ref.shape[0])
     w = min(img.shape[1], ref.shape[1])
-    img_crop = img[:h, :w].astype(np.float32)
-    ref_crop = ref[:h, :w].astype(np.float32)
+    img_crop = img[:h, :w].astype(np.float32) / 255.0
+    ref_crop = ref[:h, :w].astype(np.float32) / 255.0
 
     # 计算各通道绝对差值的均值
     diff = np.mean(np.abs(img_crop - ref_crop), axis=2)
-    return np.clip(diff, 0, 255).astype(np.uint8)
+    return np.clip(diff, 0.0, 1.0).astype(np.float32)
 
 
 def residual_to_colormap(residual: np.ndarray, colormap: str = 'jet',
-                         vmax: int = None) -> np.ndarray:
+                         vmax: float = None) -> np.ndarray:
     """将单通道残差图映射为伪彩色 RGB 图像。
 
     参数:
-        residual: 单通道残差图, shape=(H, W), dtype=uint8
+        residual: 单通道残差图, shape=(H, W), dtype=float32, 值域 [0, 1]
         colormap: matplotlib colormap 名称
-        vmax: 归一化最大值, None 时使用 residual 自身最大值
+        vmax: 残差显示上限, None 时使用 residual 自身最大值
 
     返回:
         RGB 图像, shape=(H, W, 3), dtype=uint8
     """
     if vmax is None:
-        vmax = max(int(residual.max()), 1)
+        vmax = float(residual.max())
+    vmax = max(float(vmax), 1e-12)
     cmap = plt.get_cmap(colormap)
     normalized = np.clip(residual.astype(np.float32) / vmax, 0, 1)
     colored = cmap(normalized)[:, :, :3]  # RGBA -> RGB
@@ -55,7 +56,7 @@ def residual_to_colormap(residual: np.ndarray, colormap: str = 'jet',
 _colorbar_cache = {}  # {(vmax, colormap, height, dpi): np.ndarray}
 
 
-def generate_colorbar(vmax: int, colormap: str = 'jet',
+def generate_colorbar(vmax: float, colormap: str = 'jet',
                       height: int = 256, dpi: int = 100) -> np.ndarray:
     """生成独立的竖向颜色条图片 (带缓存)。
 
@@ -70,6 +71,7 @@ def generate_colorbar(vmax: int, colormap: str = 'jet',
     返回:
         RGB 图像, shape=(H, W, 3), dtype=uint8
     """
+    vmax = max(float(vmax), 1e-12)
     cache_key = (vmax, colormap, height, dpi)
     if cache_key in _colorbar_cache:
         return _colorbar_cache[cache_key]

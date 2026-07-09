@@ -72,7 +72,7 @@ class ExportController:
 
         # 预加载 GT + 计算全局 vmax (用于残差)
         gt_sai = None
-        global_vmax = 1
+        global_vmax = 0.0
         if residual_enabled and 'Ground_Truth' in methods:
             gt_sai = self.app.lf_data.load_sai(
                 'Ground_Truth', scene, frame_index, u, v)
@@ -173,7 +173,7 @@ class ExportController:
                     count += 1
 
         # ---- 保存全局颜色条 ----
-        if residual_enabled and gt_sai is not None and global_vmax > 1:
+        if residual_enabled and gt_sai is not None and global_vmax > 0:
             cb_arr = generate_colorbar(global_vmax, dpi=export_dpi)
             save_path = os.path.join(dir_res_ann, "colorbar.png")
             self._save_image(cb_arr, save_path)
@@ -182,9 +182,9 @@ class ExportController:
         return count
 
     def _compute_global_vmax_sai(self, methods, scene, frame_index, u, v,
-                                 gt_sai) -> int:
+                                 gt_sai) -> float:
         """计算 SAI 模式下所有非 GT 方法全图残差的全局最大值。"""
-        vmax = 1
+        vmax = 0.0
         for method in methods:
             if method == 'Ground_Truth':
                 continue
@@ -193,7 +193,7 @@ class ExportController:
                 continue
             sai = ensure_rgb(sai)
             res = compute_residual(sai, gt_sai)
-            vmax = max(vmax, int(res.max()))
+            vmax = max(vmax, float(res.max()))
         return vmax
 
     def _export_mli(self, params) -> int:
@@ -217,7 +217,7 @@ class ExportController:
 
         # 预加载 GT + 计算全局 vmax
         gt_mli = None
-        global_vmax = 1
+        global_vmax = 0.0
         if residual_enabled and 'Ground_Truth' in methods:
             gt_mli = self.app.lf_data.load_mli(
                 'Ground_Truth', scene, frame_index, mode)
@@ -277,7 +277,7 @@ class ExportController:
                     count += 1
 
         # ---- 保存全局颜色条 ----
-        if residual_enabled and gt_mli is not None and global_vmax > 1:
+        if residual_enabled and gt_mli is not None and global_vmax > 0:
             cb_arr = generate_colorbar(global_vmax, dpi=export_dpi)
             save_path = os.path.join(dir_res_ann, "colorbar.png")
             self._save_image(cb_arr, save_path)
@@ -286,9 +286,9 @@ class ExportController:
         return count
 
     def _compute_global_vmax_mli(self, methods, scene, frame_index, mode,
-                                 gt_mli) -> int:
+                                 gt_mli) -> float:
         """计算 MLI 模式下所有非 GT 方法全图残差的全局最大值。"""
-        vmax = 1
+        vmax = 0.0
         for method in methods:
             if method == 'Ground_Truth':
                 continue
@@ -297,7 +297,7 @@ class ExportController:
                 continue
             mli = ensure_rgb(mli)
             res = compute_residual(mli, gt_mli)
-            vmax = max(vmax, int(res.max()))
+            vmax = max(vmax, float(res.max()))
         return vmax
 
     def _save_image(self, arr: np.ndarray, path: str):

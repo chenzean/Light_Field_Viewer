@@ -1,6 +1,6 @@
-# 🔭 Light Field Viewer — 光场图像查看器 (V1.0.3)
+# 🔭 Light Field Viewer — 光场图像查看器 (V1.0.4)
 
-> **版本：V1.0.3** | 2026-05-30
+> **版本：V1.0.4** | 2026-07-09
 
 用于光场图像/视频的**局部放大对比**、**EPI（极平面图像）提取**和**残差分析**的桌面 GUI 工具。
 
@@ -12,11 +12,26 @@
 - 🔍 **SAI 全图**：滚轮同步缩放、鼠标拖拽平移、右键拖拽画框
 - 🔢 **零填充文件名支持**：兼容 `1_1.png` 和 `013_013.png` 等命名方式
 - 🟥 **多矩形框**：支持多个放大区域，颜色自动分配或手动 RGB 输入
-- 📊 **残差图**：局部放大区域与 Ground_Truth 做差，jet 伪彩色显示，带全局统一颜色条
+- 📊 **残差图**：图像归一化到 `[0, 1]` 后与 Ground_Truth 做差，jet 伪彩色显示，带全局统一颜色条
 - 📈 **EPI 提取**：水平/垂直方向，指定角度索引和空间位置，裁剪范围可调
 - 💾 **导出功能**：一键导出原始图、标注图、局部放大、残差图、EPI + 参数日志
 
 ## 🗂️ 更新日志
+
+### 🔧 V1.0.4（2026-07-09）
+
+**📊 残差图与颜色条修正**
+
+- 残差计算改为先将输入图像除以 `255.0` 归一化到 `[0, 1]`，再计算与 `Ground_Truth` 的逐像素绝对差，并对 RGB 三通道取均值。
+- 残差伪彩色显示仍使用 `jet`，但颜色映射和颜色条上限现在基于归一化残差的 `global_vmax`，范围为 `0 ~ global_vmax`，通常不超过 `1.0`。
+- 导出时会单独生成 `05_residual_annotated/colorbar.png`，颜色条不再依赖旧的 `0~255` 残差尺度。
+
+**📦 打包修正**
+
+- `build.bat` 固定使用 `D:\Anaconda3\envs\LFVFI\python.exe` 构建，避免误用 base 环境中不兼容的 NumPy/Matplotlib 组合。
+- `LightFieldViewer.spec` 显式打包 LFVFI 环境中的 `libexpat.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`，避免 PyInstaller 从 MATLAB/Polyspace 路径收集错误 DLL 导致 exe 启动时 `pyexpat` 加载失败。
+
+---
 
 ### ⚡ V1.0.3（2026-05-30）
 
@@ -92,6 +107,8 @@ cd D:\Light_Field_Video\Light_Field_Viewer
 build.bat
 # 生成 dist\LightFieldViewer.exe
 ```
+
+当前打包脚本固定使用 `D:\Anaconda3\envs\LFVFI\python.exe`。如果本机环境路径不同，需要先修改 `build.bat` 中的 `PYTHON_EXE`。`LightFieldViewer.spec` 会显式打包 LFVFI 环境中的 `libexpat.dll`、`libcrypto-3-x64.dll` 和 `libssl-3-x64.dll`，用于避免 PyInstaller 误收集其他软件目录下的同名 DLL。
 
 ## 📦 依赖
 
@@ -254,9 +271,11 @@ pip install PyQt5 numpy Pillow matplotlib
 
 1. 勾选**"显示残差图 (与 Ground_Truth 对比)"**启用
 2. 在局部放大标签页中，每个矩形框区域下方会显示各方法与 Ground_Truth 的残差图
-3. 残差图使用 **jet 伪彩色**映射，颜色越暖（红色）表示差异越大
-4. **颜色条全局统一**：同一矩形框内所有方法共享相同的颜色条范围（取所有方法中的最大残差值），确保横向可比
-5. 需要数据中包含名为 `Ground_Truth` 的方法才能计算残差
+3. 计算残差前会先将图像像素除以 `255.0` 归一化到 `[0, 1]`
+4. 残差定义为 `mean(abs(method / 255.0 - Ground_Truth / 255.0), axis=RGB)`，因此残差值范围为 `[0, 1]`
+5. 残差图使用 **jet 伪彩色**映射，颜色越暖（红色）表示差异越大
+6. **颜色条全局统一**：颜色条范围为 `0 ~ global_vmax`，其中 `global_vmax` 是参与比较的方法中的最大归一化残差值，通常不超过 `1.0`
+7. 需要数据中包含名为 `Ground_Truth` 的方法才能计算残差
 
 ### 7. 📈 EPI 设置（仅 SAI 模式）
 
@@ -291,7 +310,10 @@ pip install PyQt5 numpy Pillow matplotlib
 │   └── ...
 ├── 04_epi_crop/               # 裁剪后的局部 EPI
 │   └── ...
-├── 05_residual/               # 残差图（带颜色条，jet 伪彩色）
+├── 05_residual_annotated/     # 全图残差 + 矩形框（jet 伪彩色）
+│   ├── colorbar.png           # 独立颜色条，范围 0 ~ global_vmax
+│   └── ...
+├── 06_residual_crop/          # 局部残差裁剪（jet 伪彩色 + 边框）
 │   └── ...
 └── export_log.txt             # 参数日志（记录所有设置）
 ```
@@ -306,7 +328,10 @@ pip install PyQt5 numpy Pillow matplotlib
 │   └── ...
 ├── 02_zoom_crop/              # 局部放大裁剪（带对应颜色边框）
 │   └── ...
-├── 05_residual/               # 残差图（带颜色条，jet 伪彩色）
+├── 05_residual_annotated/     # 全图残差 + 矩形框（jet 伪彩色）
+│   ├── colorbar.png           # 独立颜色条，范围 0 ~ global_vmax
+│   └── ...
+├── 06_residual_crop/          # 局部残差裁剪（jet 伪彩色 + 边框）
 │   └── ...
 └── export_log.txt             # 参数日志
 ```

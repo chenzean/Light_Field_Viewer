@@ -4,9 +4,11 @@ echo ========================================
 echo Light Field Viewer V1 - Build exe
 echo ========================================
 
-pip install pyinstaller
+set PYTHON_EXE=D:\Anaconda3\envs\LFVFI\python.exe
 
-pyinstaller LightFieldViewer.spec
+"%PYTHON_EXE%" -m pip install pyinstaller PyQt5
+
+"%PYTHON_EXE%" -m PyInstaller --clean --noconfirm LightFieldViewer.spec
 
 echo.
 echo Done! exe: dist\LightFieldViewer.exe

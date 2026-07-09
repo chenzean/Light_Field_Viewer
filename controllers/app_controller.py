@@ -420,12 +420,12 @@ class AppController:
             num_rects = len(self.rects)
             rect_vmax = []
             for i in range(num_rects):
-                vm = 1
+                vm = 0.0
                 for method in raw_res_crops:
                     if i < len(raw_res_crops[method]):
-                        vm = max(vm, int(raw_res_crops[method][i].max()))
+                        vm = max(vm, float(raw_res_crops[method][i].max()))
                 rect_vmax.append(vm)
-            global_vmax = max(rect_vmax) if rect_vmax else 1
+            global_vmax = max(rect_vmax) if rect_vmax else 0.0
 
             for method, res_list in raw_res_crops.items():
                 res_maps = []

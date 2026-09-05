@@ -8,7 +8,7 @@ Tab 3 — EPI 对比: 所有方法的 EPI 并排
 
 from PyQt5.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QSizePolicy, QApplication, QRubberBand, QTabWidget
+    QSizePolicy, QApplication, QRubberBand, QTabWidget, QStackedWidget, QPushButton
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect, QTimer
 from PyQt5.QtGui import QPixmap, QFont, QCursor
@@ -266,11 +266,12 @@ class SAIGridTab(QWidget):
                 vbox.setContentsMargins(0, 0, 0, 0)
                 title = QLabel(m)
                 title.setAlignment(Qt.AlignCenter)
-                font = QFont()
-                font.setBold(True)
-                font.setPointSize(9)
+                font = QFont(self.font())
+                font.setWeight(QFont.DemiBold)
+                font.setPointSize(11)
                 title.setFont(font)
-                title.setMaximumHeight(20)
+                title.setProperty("typography", "method")
+                title.setMinimumHeight(28)
                 vbox.addWidget(title)
                 sai_lbl = SAILabel()
                 sai_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -546,8 +547,8 @@ class ZoomCompareTab(QWidget):
             title = QLabel(f"  矩形框 {i+1}  ({r['x']}, {r['y']}, {r['w']}, {r['h']})")
             title.setStyleSheet(
                 f"color: rgb({color[0]},{color[1]},{color[2]}); "
-                f"font-weight: bold; font-size: 11px;")
-            title.setMaximumHeight(20)
+                f"font-weight: 600; font-size: 11pt;")
+            title.setMinimumHeight(28)
             self.main_layout.addWidget(title)
             group_widgets.append(title)
 
@@ -565,9 +566,9 @@ class ZoomCompareTab(QWidget):
                 vbox.setContentsMargins(0, 0, 0, 0)
                 name_lbl = QLabel(m)
                 name_lbl.setAlignment(Qt.AlignCenter)
-                name_lbl.setMaximumHeight(16)
-                font = QFont()
-                font.setPointSize(8)
+                name_lbl.setMinimumHeight(26)
+                font = QFont(self.font())
+                font.setPointSize(11)
                 name_lbl.setFont(font)
                 vbox.addWidget(name_lbl)
                 img_lbl = ImageLabel()
@@ -593,8 +594,8 @@ class ZoomCompareTab(QWidget):
                 res_title = QLabel(f"  残差图 (矩形框 {i+1})")
                 res_title.setStyleSheet(
                     f"color: rgb({color[0]},{color[1]},{color[2]}); "
-                    f"font-weight: bold; font-size: 10px;")
-                res_title.setMaximumHeight(18)
+                    f"font-weight: 600; font-size: 11pt;")
+                res_title.setMinimumHeight(26)
                 self.main_layout.addWidget(res_title)
                 group_widgets.append(res_title)
 
@@ -619,9 +620,9 @@ class ZoomCompareTab(QWidget):
                     vbox.setContentsMargins(0, 0, 0, 0)
                     name_lbl = QLabel(m)
                     name_lbl.setAlignment(Qt.AlignCenter)
-                    name_lbl.setMaximumHeight(16)
-                    font = QFont()
-                    font.setPointSize(8)
+                    name_lbl.setMinimumHeight(26)
+                    font = QFont(self.font())
+                    font.setPointSize(11)
                     name_lbl.setFont(font)
                     vbox.addWidget(name_lbl)
                     img_lbl = ImageLabel()
@@ -716,10 +717,11 @@ class EPICompareTab(QWidget):
             name_lbl = QLabel(m)
             name_lbl.setFixedWidth(120)
             name_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            font = QFont()
-            font.setBold(True)
-            font.setPointSize(9)
+            font = QFont(self.font())
+            font.setWeight(QFont.DemiBold)
+            font.setPointSize(11)
             name_lbl.setFont(font)
+            name_lbl.setProperty("typography", "method")
             hbox.addWidget(name_lbl)
 
             # EPI 图像
@@ -748,6 +750,7 @@ class EPICompareTab(QWidget):
 class ComparisonPanel(QWidget):
     """右侧对比面板 — 三个标签页。"""
     rect_drawn_on_sai = pyqtSignal(int, int, int, int)
+    open_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -766,7 +769,35 @@ class ComparisonPanel(QWidget):
         self.tabs.addTab(self.zoom_tab, "局部放大")
         self.tabs.addTab(self.epi_tab, "EPI 对比")
 
-        layout.addWidget(self.tabs)
+        self.content_stack = QStackedWidget()
+        empty = QWidget()
+        empty.setObjectName("emptyCanvas")
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.setAlignment(Qt.AlignCenter)
+        empty_layout.setSpacing(14)
+        empty_title = QLabel("开始探索光场")
+        empty_title.setObjectName("emptyTitle")
+        empty_title.setAlignment(Qt.AlignCenter)
+        empty_description = QLabel("打开数据目录，选择场景与方法，\n在同一画布中比较每一处细节。")
+        empty_description.setObjectName("emptyDescription")
+        empty_description.setAlignment(Qt.AlignCenter)
+        open_button = QPushButton("打开数据目录…")
+        open_button.setObjectName("primaryAction")
+        open_button.setCursor(Qt.PointingHandCursor)
+        open_button.clicked.connect(self.open_requested.emit)
+        empty_layout.addWidget(empty_title)
+        empty_layout.addWidget(empty_description)
+        empty_layout.addWidget(open_button, 0, Qt.AlignHCenter)
+        self.content_stack.addWidget(empty)
+        self.content_stack.addWidget(self.tabs)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.addWidget(self.content_stack)
+        self.interaction_hint = QLabel("滚轮缩放  ·  拖动平移  ·  右键拖动添加选区")
+        self.interaction_hint.setObjectName("interactionHint")
+        self.interaction_hint.setAlignment(Qt.AlignCenter)
+        self.interaction_hint.hide()
+        layout.addWidget(self.interaction_hint)
+        self.tabs.currentChanged.connect(self._update_hint)
 
         # 转发信号
         self.sai_tab.rect_drawn.connect(
@@ -774,6 +805,17 @@ class ComparisonPanel(QWidget):
 
     def set_methods(self, methods):
         self.sai_tab.set_methods(methods)
+        self.content_stack.setCurrentIndex(1 if methods else 0)
+        self._update_hint()
+
+    def _update_hint(self, *_):
+        self.interaction_hint.setVisible(self.content_stack.currentIndex() == 1)
+        hints = {
+            self.sai_tab: "滚轮缩放  ·  拖动平移  ·  右键拖动添加选区  ·  Home 复位",
+            self.zoom_tab: "在全图中添加选区，或前往侧栏「标注」设置局部放大与残差",
+            self.epi_tab: "前往侧栏「标注」开启 EPI，并调整方向与采样位置",
+        }
+        self.interaction_hint.setText(hints.get(self.tabs.currentWidget(), ""))
 
     def update_method_sai(self, method, pixmap):
         self.sai_tab.set_sai(method, pixmap)

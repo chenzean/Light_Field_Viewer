@@ -6,12 +6,13 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QSpinBox, QComboBox, QCheckBox, QRadioButton, QPushButton,
     QButtonGroup, QListWidget, QListWidgetItem, QFileDialog,
-    QLineEdit, QScrollArea, QAbstractItemView
+    QLineEdit, QScrollArea, QAbstractItemView, QGridLayout, QSizePolicy, QTabWidget
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 import config as cfg
+from views.controls import SelectionBox, NumberBox
 
 
 class SettingsPanel(QWidget):
@@ -49,14 +50,18 @@ class SettingsPanel(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         container = QWidget()
+        container.setObjectName("settingsContent")
         layout = QVBoxLayout(container)
-        layout.setSpacing(6)
+        layout.setSpacing(10)
+        layout.setContentsMargins(4, 0, 10, 10)
 
         # ---- 可视化模式选择 ----
         grp_vis = QGroupBox("可视化模式")
         hbox_vis = QHBoxLayout()
         self.radio_sai = QRadioButton("子孔径图像 (SAI)")
         self.radio_mli = QRadioButton("微透镜图像 (MLI)")
+        self.radio_sai.setProperty("segmented", True)
+        self.radio_mli.setProperty("segmented", True)
         self.radio_sai.setChecked(True)
         self.btn_grp_vis = QButtonGroup()
         self.btn_grp_vis.addButton(self.radio_sai, 0)
@@ -72,6 +77,8 @@ class SettingsPanel(QWidget):
         hbox_mode = QHBoxLayout()
         self.radio_image = QRadioButton("光场图像")
         self.radio_video = QRadioButton("光场视频")
+        self.radio_image.setProperty("segmented", True)
+        self.radio_video.setProperty("segmented", True)
         self.radio_video.setChecked(True)
         self.btn_grp_mode = QButtonGroup()
         self.btn_grp_mode.addButton(self.radio_image, 0)
@@ -113,55 +120,85 @@ class SettingsPanel(QWidget):
         # ---- 角度分辨率 (MLI 模式下隐藏) ----
         self.grp_angular = QGroupBox("角度分辨率")
         grp_angular = self.grp_angular
-        hbox3 = QHBoxLayout()
-        self.spin_u_max = QSpinBox()
+        angular_grid = QGridLayout()
+        angular_grid.setHorizontalSpacing(12)
+        angular_grid.setVerticalSpacing(6)
+        self.spin_u_max = NumberBox()
         self.spin_u_max.setRange(1, 20)
         self.spin_u_max.setValue(cfg.DEFAULT_ANGULAR_U)
-        self.spin_v_max = QSpinBox()
+        self.spin_v_max = NumberBox()
         self.spin_v_max.setRange(1, 20)
         self.spin_v_max.setValue(cfg.DEFAULT_ANGULAR_V)
-        hbox3.addWidget(QLabel("U:"))
-        hbox3.addWidget(self.spin_u_max)
-        hbox3.addWidget(QLabel("V:"))
-        hbox3.addWidget(self.spin_v_max)
+        for column, (text, spin) in enumerate([
+            ("U 方向", self.spin_u_max), ("V 方向", self.spin_v_max)
+        ]):
+            label = QLabel(text)
+            label.setBuddy(spin)
+            spin.setAlignment(Qt.AlignCenter)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            angular_grid.addWidget(label, 0, column)
+            angular_grid.addWidget(spin, 1, column)
+            angular_grid.setColumnStretch(column, 1)
         self.spin_u_max.valueChanged.connect(self._on_angular_changed)
         self.spin_v_max.valueChanged.connect(self._on_angular_changed)
-        grp_angular.setLayout(hbox3)
+        grp_angular.setLayout(angular_grid)
         layout.addWidget(grp_angular)
 
         # ---- 场景 / 帧 / 角度坐标 ----
         grp_sel = QGroupBox("数据选择")
         vbox2 = QVBoxLayout()
+        vbox2.setSpacing(12)
         # 场景
         hbox_scene = QHBoxLayout()
-        hbox_scene.addWidget(QLabel("场景:"))
-        self.combo_scene = QComboBox()
+        hbox_scene.setContentsMargins(0, 0, 0, 0)
+        hbox_scene.setSpacing(8)
+        scene_label = QLabel("场景")
+        scene_label.setFixedWidth(36)
+        hbox_scene.addWidget(scene_label)
+        self.combo_scene = SelectionBox()
         self.combo_scene.currentTextChanged.connect(self._on_scene_changed)
-        hbox_scene.addWidget(self.combo_scene)
+        self.combo_scene.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.combo_scene.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_scene.setMinimumContentsLength(8)
+        scene_label.setBuddy(self.combo_scene)
+        hbox_scene.addWidget(self.combo_scene, 1)
         vbox2.addLayout(hbox_scene)
         # 帧 (光场视频时可用, 光场图像时隐藏)
         self.hbox_frame_widget = QWidget()
         hbox_frame = QHBoxLayout(self.hbox_frame_widget)
         hbox_frame.setContentsMargins(0, 0, 0, 0)
-        hbox_frame.addWidget(QLabel("帧:"))
-        self.combo_frame = QComboBox()
+        hbox_frame.setSpacing(8)
+        frame_label = QLabel("帧")
+        frame_label.setFixedWidth(36)
+        hbox_frame.addWidget(frame_label)
+        self.combo_frame = SelectionBox()
         self.combo_frame.currentIndexChanged.connect(self._on_frame_changed)
-        hbox_frame.addWidget(self.combo_frame)
+        self.combo_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        frame_label.setBuddy(self.combo_frame)
+        hbox_frame.addWidget(self.combo_frame, 1)
         vbox2.addWidget(self.hbox_frame_widget)
         # 角度坐标 (MLI 模式下隐藏)
         self.widget_uv = QWidget()
-        hbox_uv = QHBoxLayout(self.widget_uv)
-        hbox_uv.setContentsMargins(0, 0, 0, 0)
-        hbox_uv.addWidget(QLabel("u:"))
-        self.spin_u = QSpinBox()
+        uv_grid = QGridLayout(self.widget_uv)
+        uv_grid.setContentsMargins(0, 0, 0, 0)
+        uv_grid.setHorizontalSpacing(12)
+        uv_grid.setVerticalSpacing(6)
+        self.spin_u = NumberBox()
         self.spin_u.setRange(1, cfg.DEFAULT_ANGULAR_U)
         self.spin_u.setValue(1)
-        hbox_uv.addWidget(self.spin_u)
-        hbox_uv.addWidget(QLabel("v:"))
-        self.spin_v = QSpinBox()
+        self.spin_v = NumberBox()
         self.spin_v.setRange(1, cfg.DEFAULT_ANGULAR_V)
         self.spin_v.setValue(1)
-        hbox_uv.addWidget(self.spin_v)
+        for column, (text, spin) in enumerate([
+            ("视角 u", self.spin_u), ("视角 v", self.spin_v)
+        ]):
+            label = QLabel(text)
+            label.setBuddy(spin)
+            spin.setAlignment(Qt.AlignCenter)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            uv_grid.addWidget(label, 0, column)
+            uv_grid.addWidget(spin, 1, column)
+            uv_grid.setColumnStretch(column, 1)
         self.spin_u.valueChanged.connect(self._on_uv_changed)
         self.spin_v.valueChanged.connect(self._on_uv_changed)
         vbox2.addWidget(self.widget_uv)
@@ -174,12 +211,14 @@ class SettingsPanel(QWidget):
         hbox_btn = QHBoxLayout()
         btn_select_all = QPushButton("全选")
         btn_select_all.clicked.connect(self._select_all_methods)
-        btn_deselect_all = QPushButton("全不选")
+        btn_deselect_all = QPushButton("取消全选")
         btn_deselect_all.clicked.connect(self._deselect_all_methods)
         hbox_btn.addWidget(btn_select_all)
         hbox_btn.addWidget(btn_deselect_all)
         vbox3.addLayout(hbox_btn)
         self.list_methods = QListWidget()
+        self.list_methods.setMinimumHeight(100)
+        self.list_methods.setMaximumHeight(160)
         self.list_methods.setSelectionMode(QAbstractItemView.NoSelection)
         self.list_methods.itemChanged.connect(self._on_methods_changed)
         vbox3.addWidget(self.list_methods)
@@ -190,11 +229,13 @@ class SettingsPanel(QWidget):
         grp_rect = QGroupBox("矩形框管理")
         vbox4 = QVBoxLayout()
         hbox_rect_btn = QHBoxLayout()
-        btn_add_rect = QPushButton("+ 添加框")
+        btn_add_rect = QPushButton("添加框")
         btn_add_rect.clicked.connect(lambda: self.rect_added.emit())
-        btn_del_rect = QPushButton("- 删除框")
+        btn_del_rect = QPushButton("删除框")
+        btn_del_rect.setProperty("destructive", True)
         btn_del_rect.clicked.connect(self._on_remove_rect)
         btn_clear_rect = QPushButton("清空全部")
+        btn_clear_rect.setProperty("destructive", True)
         btn_clear_rect.clicked.connect(lambda: self.rects_cleared.emit())
         hbox_rect_btn.addWidget(btn_add_rect)
         hbox_rect_btn.addWidget(btn_del_rect)
@@ -202,35 +243,42 @@ class SettingsPanel(QWidget):
         vbox4.addLayout(hbox_rect_btn)
         # 框列表
         self.list_rects = QListWidget()
+        self.list_rects.setMinimumHeight(80)
+        self.list_rects.setMaximumHeight(120)
         self.list_rects.currentRowChanged.connect(self._on_rect_selected)
         vbox4.addWidget(self.list_rects)
         # 选中框参数
         vbox4.addWidget(QLabel("选中框参数:"))
-        grid_rect = QVBoxLayout()
-        for name, attr, default in [
+        grid_rect = QGridLayout()
+        grid_rect.setHorizontalSpacing(12)
+        for index, (name, attr, default) in enumerate([
             ("X:", 'spin_rect_x', cfg.DEFAULT_RECT_X),
             ("Y:", 'spin_rect_y', cfg.DEFAULT_RECT_Y),
             ("W:", 'spin_rect_w', cfg.DEFAULT_RECT_W),
             ("H:", 'spin_rect_h', cfg.DEFAULT_RECT_H),
-        ]:
+        ]):
             hb = QHBoxLayout()
-            hb.addWidget(QLabel(name))
+            label = QLabel(name)
+            label.setFixedWidth(22)
+            hb.addWidget(label)
             spin = QSpinBox()
             spin.setRange(0, 4096)
             spin.setValue(default)
             spin.valueChanged.connect(self._on_rect_params_changed)
             setattr(self, attr, spin)
             hb.addWidget(spin)
-            grid_rect.addLayout(hb)
+            grid_rect.addLayout(hb, index // 2, index % 2)
         # 粗细
         hb_thick = QHBoxLayout()
-        hb_thick.addWidget(QLabel("粗细:"))
+        thickness_label = QLabel("线宽")
+        thickness_label.setFixedWidth(48)
+        hb_thick.addWidget(thickness_label)
         self.spin_rect_thickness = QSpinBox()
         self.spin_rect_thickness.setRange(1, 20)
         self.spin_rect_thickness.setValue(cfg.DEFAULT_RECT_THICKNESS)
         self.spin_rect_thickness.valueChanged.connect(self._on_rect_params_changed)
         hb_thick.addWidget(self.spin_rect_thickness)
-        grid_rect.addLayout(hb_thick)
+        grid_rect.addLayout(hb_thick, 2, 0, 1, 2)
         # RGB 颜色输入
         hb_color = QHBoxLayout()
         hb_color.addWidget(QLabel("颜色 R:"))
@@ -251,7 +299,7 @@ class SettingsPanel(QWidget):
         self.spin_rect_b.setValue(0)
         self.spin_rect_b.valueChanged.connect(self._on_rect_params_changed)
         hb_color.addWidget(self.spin_rect_b)
-        grid_rect.addLayout(hb_color)
+        grid_rect.addLayout(hb_color, 3, 0, 1, 2)
         vbox4.addLayout(grid_rect)
         grp_rect.setLayout(vbox4)
         layout.addWidget(grp_rect)
@@ -297,6 +345,7 @@ class SettingsPanel(QWidget):
             hb = QHBoxLayout()
             hb.addWidget(QLabel(name))
             spin = QSpinBox()
+            hb.itemAt(0).widget().setFixedWidth(76)
             spin.setRange(1, max_val)
             spin.setValue(default)
             spin.valueChanged.connect(self._on_epi_changed)
@@ -318,22 +367,61 @@ class SettingsPanel(QWidget):
         grp_dpi.setLayout(hbox_dpi)
         layout.addWidget(grp_dpi)
 
-        # ---- 按钮 ----
-        hbox_actions = QHBoxLayout()
-        btn_refresh = QPushButton("刷新")
-        btn_refresh.clicked.connect(lambda: self.refresh_requested.emit())
-        btn_export = QPushButton("导出")
-        btn_export.clicked.connect(lambda: self.export_requested.emit())
-        hbox_actions.addWidget(btn_refresh)
-        hbox_actions.addWidget(btn_export)
-        layout.addLayout(hbox_actions)
+        # Separate everyday browsing from annotation and export settings.
+        display_group = QGroupBox("显示方式")
+        display_layout = QGridLayout(display_group)
+        display_layout.setHorizontalSpacing(6)
+        display_layout.setVerticalSpacing(8)
+        for row, (caption, first, second, first_text, second_text) in enumerate([
+            ("模式", self.radio_sai, self.radio_mli, "SAI", "MLI"),
+            ("类型", self.radio_image, self.radio_video, "图像", "视频"),
+        ]):
+            label = QLabel(caption)
+            label.setFixedWidth(36)
+            display_layout.addWidget(label, row, 0)
+            for column, button, text in [(1, first, first_text), (2, second, second_text)]:
+                button.setToolTip(button.text())
+                button.setText(text)
+                display_layout.addWidget(button, row, column)
+                display_layout.setColumnStretch(column, 1)
+        vbox.removeItem(hbox2)
+        export_group = QGroupBox("保存位置")
+        export_layout = QVBoxLayout(export_group)
+        export_layout.addLayout(hbox2)
+        while layout.count():
+            layout.takeAt(0)
 
-        layout.addStretch()
-        scroll.setWidget(container)
+        self.sections = QTabWidget()
+        self.sections.setObjectName("inspectorTabs")
+        for title, groups in [
+            ("数据", [grp_dir, display_group, grp_angular, grp_sel, grp_methods]),
+            ("标注", [grp_rect, grp_residual, grp_epi]),
+            ("导出", [export_group, grp_dpi]),
+        ]:
+            page = QWidget()
+            page.setObjectName("settingsContent")
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(16, 12, 16, 16)
+            page_layout.setSpacing(12)
+            for group in groups:
+                page_layout.addWidget(group)
+            page_layout.addStretch()
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            area.setWidget(page)
+            self.sections.addTab(area, title)
+        scroll.deleteLater()
+        container.deleteLater()
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.addWidget(scroll)
+        main_layout.setContentsMargins(0, 12, 0, 0)
+        heading = QLabel("工作区设置")
+        heading.setObjectName("sidebarHeading")
+        main_layout.addWidget(heading)
+        main_layout.addWidget(self.sections)
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.PointingHandCursor)
 
     # ---- 可视化模式切换 ----
     def _on_vis_mode_changed(self):

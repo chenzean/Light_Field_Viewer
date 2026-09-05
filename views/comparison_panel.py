@@ -4,20 +4,94 @@
 Tab 1 — SAI 全图网格: 支持同步缩放 + 鼠标拖拽平移 + 右键画框
 Tab 2 — 局部放大对比: 每个矩形框的裁剪区域, 所有方法并排
 Tab 3 — EPI 对比: 所有方法的 EPI 并排
+
+图块统一由 ImagePlate 绘制: 圆角、发丝描边、随外观切换的底色。
 """
 
 from PyQt5.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QSizePolicy, QApplication, QRubberBand, QTabWidget, QStackedWidget, QPushButton
+    QSizePolicy, QRubberBand, QTabWidget, QStackedWidget, QPushButton
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect, QTimer
-from PyQt5.QtGui import QPixmap, QFont, QCursor
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QPointF, QRect, QRectF, QTimer
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QCursor
+
+from views import theme
+
+PLATE_RADIUS = 8
+GRID_SPACING = 10
+
+
+# ===========================================================================
+# 图块基类 — 圆角裁切 + 发丝描边
+# ===========================================================================
+class ImagePlate(QLabel):
+    """A rounded image tile. Qt cannot clip a QLabel pixmap, so it paints itself."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self._edge = None        # 覆盖色 (矩形框配色), None 时用主题描边
+        self._edge_width = 1.0
+
+    def set_edge(self, color, width=1.4):
+        self._edge = QColor(*color) if color is not None else None
+        self._edge_width = width
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        rect = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(rect, PLATE_RADIUS, PLATE_RADIUS)
+
+        pixmap = self.pixmap()
+        covers = (pixmap is not None and not pixmap.isNull()
+                  and pixmap.width() >= self.width()
+                  and pixmap.height() >= self.height())
+        if not covers:
+            painter.fillPath(path, theme.color("image_bed"))
+        if pixmap is not None and not pixmap.isNull():
+            painter.save()
+            painter.setClipPath(path)
+            ratio = pixmap.devicePixelRatio() or 1.0
+            painter.drawPixmap(
+                self._pixmap_origin(rect, pixmap.width() / ratio,
+                                    pixmap.height() / ratio), pixmap)
+            painter.restore()
+
+        if self._edge_width <= 0:
+            return
+        painter.setPen(QPen(self._edge if self._edge is not None
+                            else theme.color("border_soft"), self._edge_width))
+        painter.setBrush(Qt.NoBrush)
+        inset = self._edge_width / 2.0
+        painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset),
+                                PLATE_RADIUS, PLATE_RADIUS)
+
+    def _pixmap_origin(self, rect, width, height):
+        """Honour the label's alignment the way QLabel would."""
+        flags = self.alignment()
+        if flags & Qt.AlignLeft:
+            x = 0.0
+        elif flags & Qt.AlignRight:
+            x = rect.width() - width
+        else:
+            x = (rect.width() - width) / 2.0
+        if flags & Qt.AlignTop:
+            y = 0.0
+        elif flags & Qt.AlignBottom:
+            y = rect.height() - height
+        else:
+            y = (rect.height() - height) / 2.0
+        return QPointF(x, y)
 
 
 # ===========================================================================
 # SAI 标签 — 支持缩放后的视口裁剪显示 + 鼠标拖拽平移 + 右键画框
 # ===========================================================================
-class SAILabel(QLabel):
+class SAILabel(ImagePlate):
     """SAI 图像标签, 显示指定视口区域。
 
     缩放/平移由父面板统一管理, 本 Label 只负责:
@@ -33,8 +107,6 @@ class SAILabel(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("border: 1px solid #999; background: white;")
         self.setMinimumSize(80, 80)
         self._original_pixmap = None
         # 当前显示的 viewport (原图坐标)
@@ -169,11 +241,9 @@ class SAILabel(QLabel):
 # ===========================================================================
 # 通用图像 Label (用于放大图和 EPI)
 # ===========================================================================
-class ImageLabel(QLabel):
+class ImageLabel(ImagePlate):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("border: 1px solid #ccc; background: white;")
         self.setScaledContents(False)
         self.setMinimumSize(40, 40)
         self._pixmap = None
@@ -191,6 +261,25 @@ class ImageLabel(QLabel):
             super().setPixmap(self._pixmap.scaled(
                 event.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         super().resizeEvent(event)
+
+
+def _method_caption(text):
+    """The small semibold name that sits above every tile."""
+    label = QLabel(text)
+    label.setAlignment(Qt.AlignCenter)
+    label.setProperty("typography", "method")
+    label.setMinimumHeight(22)
+    return label
+
+
+def _group_caption(color, text):
+    """Rect heading: a colour chip in the rect's colour, then neutral text."""
+    label = QLabel(
+        f'<span style="color: rgb({color[0]},{color[1]},{color[2]});">■</span>'
+        f'&nbsp;&nbsp;{text}')
+    label.setProperty("typography", "method")
+    label.setMinimumHeight(24)
+    return label
 
 
 # ===========================================================================
@@ -238,8 +327,8 @@ class SAIGridTab(QWidget):
         self.scroll.setWidgetResizable(True)
         self.container = QWidget()
         self.grid = QGridLayout(self.container)
-        self.grid.setSpacing(4)
-        self.grid.setContentsMargins(4, 4, 4, 4)
+        self.grid.setSpacing(GRID_SPACING)
+        self.grid.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
         layout = QVBoxLayout(self)
@@ -262,16 +351,9 @@ class SAIGridTab(QWidget):
                 # 容器: 标题 + SAILabel
                 container = QWidget()
                 vbox = QVBoxLayout(container)
-                vbox.setSpacing(2)
+                vbox.setSpacing(5)
                 vbox.setContentsMargins(0, 0, 0, 0)
-                title = QLabel(m)
-                title.setAlignment(Qt.AlignCenter)
-                font = QFont(self.font())
-                font.setWeight(QFont.DemiBold)
-                font.setPointSize(11)
-                title.setFont(font)
-                title.setProperty("typography", "method")
-                title.setMinimumHeight(28)
+                title = _method_caption(m)
                 vbox.addWidget(title)
                 sai_lbl = SAILabel()
                 sai_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -446,8 +528,8 @@ class ZoomCompareTab(QWidget):
         self.scroll.setWidgetResizable(True)
         self.container = QWidget()
         self.main_layout = QVBoxLayout(self.container)
-        self.main_layout.setSpacing(12)
-        self.main_layout.setContentsMargins(4, 4, 4, 4)
+        self.main_layout.setSpacing(10)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
         layout = QVBoxLayout(self)
@@ -514,6 +596,31 @@ class ZoomCompareTab(QWidget):
         self._colorbar_pixmap = colorbar_pixmap
         self._rebuild()
 
+    def _tile_grid(self, methods, best_cols, color, source, rect_index):
+        """一组方法的裁剪图网格。"""
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setSpacing(GRID_SPACING)
+        grid.setContentsMargins(0, 0, 0, 0)
+        for j, m in enumerate(methods):
+            cell = QWidget()
+            vbox = QVBoxLayout(cell)
+            vbox.setSpacing(4)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.addWidget(_method_caption(m))
+            img_lbl = ImageLabel()
+            img_lbl.set_edge(color, 1.6)
+            img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            vbox.addWidget(img_lbl)
+            grid.addWidget(cell, j // best_cols, j % best_cols)
+            if source and m in source and rect_index < len(source[m]):
+                img_lbl.set_image(source[m][rect_index])
+        for c in range(best_cols):
+            grid.setColumnStretch(c, 1)
+        for r_idx in range((len(methods) + best_cols - 1) // best_cols):
+            grid.setRowStretch(r_idx, 1)
+        return holder
+
     def _rebuild(self):
         """根据当前面板宽度重建所有内容。"""
         # 清除旧的所有内容 (widget + stretch spacer)
@@ -532,7 +639,6 @@ class ZoomCompareTab(QWidget):
         if not rects or not methods:
             return
 
-        n = len(methods)
         has_residual = residual_data is not None
 
         # 自动选择最优列数 (并记录, 供 resize 时判断是否需要重建)
@@ -544,111 +650,39 @@ class ZoomCompareTab(QWidget):
             group_widgets = []
 
             # 标题
-            title = QLabel(f"  矩形框 {i+1}  ({r['x']}, {r['y']}, {r['w']}, {r['h']})")
-            title.setStyleSheet(
-                f"color: rgb({color[0]},{color[1]},{color[2]}); "
-                f"font-weight: 600; font-size: 11pt;")
-            title.setMinimumHeight(28)
+            title = _group_caption(
+                color, f"矩形框 {i+1}　({r['x']}, {r['y']})　{r['w']}×{r['h']}")
             self.main_layout.addWidget(title)
             group_widgets.append(title)
 
             # 裁剪图网格
-            grid_w = QWidget()
-            grid = QGridLayout(grid_w)
-            grid.setSpacing(4)
-            grid.setContentsMargins(0, 0, 0, 0)
-
-            num_rows = (n + best_cols - 1) // best_cols
-            for j, m in enumerate(methods):
-                cell = QWidget()
-                vbox = QVBoxLayout(cell)
-                vbox.setSpacing(1)
-                vbox.setContentsMargins(0, 0, 0, 0)
-                name_lbl = QLabel(m)
-                name_lbl.setAlignment(Qt.AlignCenter)
-                name_lbl.setMinimumHeight(26)
-                font = QFont(self.font())
-                font.setPointSize(11)
-                name_lbl.setFont(font)
-                vbox.addWidget(name_lbl)
-                img_lbl = ImageLabel()
-                img_lbl.setStyleSheet(
-                    f"border: 2px solid rgb({color[0]},{color[1]},{color[2]});")
-                img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                vbox.addWidget(img_lbl)
-                grid.addWidget(cell, j // best_cols, j % best_cols)
-
-                if m in crop_data and i < len(crop_data[m]):
-                    img_lbl.set_image(crop_data[m][i])
-
-            for c in range(best_cols):
-                grid.setColumnStretch(c, 1)
-            for r_idx in range(num_rows):
-                grid.setRowStretch(r_idx, 1)
-
+            grid_w = self._tile_grid(methods, best_cols, color, crop_data, i)
             self.main_layout.addWidget(grid_w, 1)
             group_widgets.append(grid_w)
 
             # 残差图网格 (如果启用)
             if has_residual:
-                res_title = QLabel(f"  残差图 (矩形框 {i+1})")
-                res_title.setStyleSheet(
-                    f"color: rgb({color[0]},{color[1]},{color[2]}); "
-                    f"font-weight: 600; font-size: 11pt;")
-                res_title.setMinimumHeight(26)
+                res_title = _group_caption(color, f"残差图 (矩形框 {i+1})")
                 self.main_layout.addWidget(res_title)
                 group_widgets.append(res_title)
 
                 # 残差网格 + 颜色条 水平排列
                 res_row_w = QWidget()
                 res_row_layout = QHBoxLayout(res_row_w)
-                res_row_layout.setSpacing(4)
+                res_row_layout.setSpacing(GRID_SPACING)
                 res_row_layout.setContentsMargins(0, 0, 0, 0)
 
-                # 左侧: 残差图网格
-                res_grid_w = QWidget()
-                res_grid = QGridLayout(res_grid_w)
-                res_grid.setSpacing(4)
-                res_grid.setContentsMargins(0, 0, 0, 0)
-
                 res_methods = [m for m in methods if m != 'Ground_Truth']
-                n_res = len(res_methods)
-                for j, m in enumerate(res_methods):
-                    cell = QWidget()
-                    vbox = QVBoxLayout(cell)
-                    vbox.setSpacing(1)
-                    vbox.setContentsMargins(0, 0, 0, 0)
-                    name_lbl = QLabel(m)
-                    name_lbl.setAlignment(Qt.AlignCenter)
-                    name_lbl.setMinimumHeight(26)
-                    font = QFont(self.font())
-                    font.setPointSize(11)
-                    name_lbl.setFont(font)
-                    vbox.addWidget(name_lbl)
-                    img_lbl = ImageLabel()
-                    img_lbl.setStyleSheet(
-                        f"border: 2px solid rgb({color[0]},{color[1]},{color[2]});")
-                    img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                    vbox.addWidget(img_lbl)
-                    res_grid.addWidget(cell, j // best_cols, j % best_cols)
-
-                    if residual_data and m in residual_data and i < len(residual_data[m]):
-                        img_lbl.set_image(residual_data[m][i])
-
-                num_res_rows = (n_res + best_cols - 1) // best_cols
-                for c in range(best_cols):
-                    res_grid.setColumnStretch(c, 1)
-                for r_idx in range(num_res_rows):
-                    res_grid.setRowStretch(r_idx, 1)
-
-                res_row_layout.addWidget(res_grid_w, 1)
+                res_row_layout.addWidget(
+                    self._tile_grid(res_methods, best_cols, color,
+                                    residual_data, i), 1)
 
                 # 右侧: 颜色条
                 if self._colorbar_pixmap and not self._colorbar_pixmap.isNull():
                     cb_lbl = ImageLabel()
-                    cb_lbl.setFixedWidth(60)
+                    cb_lbl.setFixedWidth(56)
                     cb_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-                    cb_lbl.setStyleSheet("border: none;")
+                    cb_lbl.set_edge(None, 0.0)
                     cb_lbl.set_image(self._colorbar_pixmap)
                     res_row_layout.addWidget(cb_lbl)
 
@@ -666,7 +700,7 @@ class ZoomCompareTab(QWidget):
 class EPICompareTab(QWidget):
     """EPI 对比 — 所有方法的 EPI 竖向排列, 统一宽度, 方便上下对比线性结构。"""
 
-    EPI_DISPLAY_HEIGHT = 40  # 每条 EPI 的固定显示高度
+    EPI_DISPLAY_HEIGHT = 44  # 每条 EPI 的固定显示高度
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -677,8 +711,8 @@ class EPICompareTab(QWidget):
         self.scroll.setWidgetResizable(True)
         self.container = QWidget()
         self.vbox = QVBoxLayout(self.container)
-        self.vbox.setSpacing(2)
-        self.vbox.setContentsMargins(4, 4, 4, 4)
+        self.vbox.setSpacing(6)
+        self.vbox.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
         layout = QVBoxLayout(self)
@@ -700,41 +734,30 @@ class EPICompareTab(QWidget):
         if not methods or not epi_data:
             return
 
-        # 找到所有 EPI 的最大宽度, 用于统一显示
-        max_w = 1
-        for m in methods:
-            pix = epi_data.get(m)
-            if pix and not pix.isNull():
-                max_w = max(max_w, pix.width())
-
         for m in methods:
             row_w = QWidget()
             hbox = QHBoxLayout(row_w)
-            hbox.setSpacing(4)
+            hbox.setSpacing(10)
             hbox.setContentsMargins(0, 0, 0, 0)
 
-            # 方法名 (固定宽度, 左对齐)
+            # 方法名 (固定宽度, 右对齐, 与图像基线对齐)
             name_lbl = QLabel(m)
-            name_lbl.setFixedWidth(120)
+            name_lbl.setFixedWidth(118)
             name_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            font = QFont(self.font())
-            font.setWeight(QFont.DemiBold)
-            font.setPointSize(11)
-            name_lbl.setFont(font)
             name_lbl.setProperty("typography", "method")
             hbox.addWidget(name_lbl)
 
             # EPI 图像
-            img_lbl = QLabel()
+            img_lbl = ImagePlate()
             img_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            img_lbl.setStyleSheet("border: 1px solid #999; background: white;")
             img_lbl.setFixedHeight(self.EPI_DISPLAY_HEIGHT)
             img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
             pix = epi_data.get(m)
             if pix and not pix.isNull():
                 # 统一缩放: 高度固定, 宽度按比例
-                scaled = pix.scaledToHeight(self.EPI_DISPLAY_HEIGHT, Qt.SmoothTransformation)
+                scaled = pix.scaledToHeight(
+                    self.EPI_DISPLAY_HEIGHT, Qt.SmoothTransformation)
                 img_lbl.setPixmap(scaled)
 
             hbox.addWidget(img_lbl)
@@ -758,9 +781,12 @@ class ComparisonPanel(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(20, 16, 20, 12)
+        layout.setSpacing(12)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("canvasTabs")
+        self.tabs.setDocumentMode(True)
         self.sai_tab = SAIGridTab()
         self.zoom_tab = ZoomCompareTab()
         self.epi_tab = EPICompareTab()
@@ -770,11 +796,33 @@ class ComparisonPanel(QWidget):
         self.tabs.addTab(self.epi_tab, "EPI 对比")
 
         self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self._build_empty_state())
+        self.content_stack.addWidget(self.tabs)
+        layout.addWidget(self.content_stack)
+
+        self.interaction_hint = QLabel()
+        self.interaction_hint.setObjectName("interactionHint")
+        self.interaction_hint.setAlignment(Qt.AlignCenter)
+        self.interaction_hint.hide()
+        layout.addWidget(self.interaction_hint)
+        self.tabs.currentChanged.connect(self._update_hint)
+        self._update_hint()
+
+        # 转发信号
+        self.sai_tab.rect_drawn.connect(
+            lambda x, y, w, h: self.rect_drawn_on_sai.emit(x, y, w, h))
+
+    def _build_empty_state(self):
         empty = QWidget()
         empty.setObjectName("emptyCanvas")
         empty_layout = QVBoxLayout(empty)
         empty_layout.setAlignment(Qt.AlignCenter)
-        empty_layout.setSpacing(14)
+        empty_layout.setSpacing(10)
+
+        self.empty_glyph = QLabel()
+        self.empty_glyph.setAlignment(Qt.AlignCenter)
+        self.empty_glyph.setFixedHeight(64)
+
         empty_title = QLabel("开始探索光场")
         empty_title.setObjectName("emptyTitle")
         empty_title.setAlignment(Qt.AlignCenter)
@@ -785,23 +833,45 @@ class ComparisonPanel(QWidget):
         open_button.setObjectName("primaryAction")
         open_button.setCursor(Qt.PointingHandCursor)
         open_button.clicked.connect(self.open_requested.emit)
+
+        empty_layout.addWidget(self.empty_glyph)
         empty_layout.addWidget(empty_title)
         empty_layout.addWidget(empty_description)
+        empty_layout.addSpacing(6)
         empty_layout.addWidget(open_button, 0, Qt.AlignHCenter)
-        self.content_stack.addWidget(empty)
-        self.content_stack.addWidget(self.tabs)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.addWidget(self.content_stack)
-        self.interaction_hint = QLabel("滚轮缩放  ·  拖动平移  ·  右键拖动添加选区")
-        self.interaction_hint.setObjectName("interactionHint")
-        self.interaction_hint.setAlignment(Qt.AlignCenter)
-        self.interaction_hint.hide()
-        layout.addWidget(self.interaction_hint)
-        self.tabs.currentChanged.connect(self._update_hint)
+        self._paint_empty_glyph()
+        return empty
 
-        # 转发信号
-        self.sai_tab.rect_drawn.connect(
-            lambda x, y, w, h: self.rect_drawn_on_sai.emit(x, y, w, h))
+    def _paint_empty_glyph(self):
+        """A 2×2 grid of plates — the app's own subject, drawn simply."""
+        scale = 2
+        size = 60
+        pixmap = QPixmap(size * scale, size * scale)
+        pixmap.fill(Qt.transparent)
+        pixmap.setDevicePixelRatio(scale)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        stroke = theme.color("text_3")
+        fill = QColor(stroke)
+        fill.setAlpha(28)
+        painter.setPen(QPen(stroke, 1.4))
+        painter.setBrush(fill)
+        side, gap = 24, 5
+        origin = (size - side * 2 - gap) / 2.0
+        for row in range(2):
+            for col in range(2):
+                painter.drawRoundedRect(
+                    QRectF(origin + col * (side + gap),
+                           origin + row * (side + gap), side, side), 5, 5)
+        painter.end()
+        self.empty_glyph.setPixmap(pixmap)
+
+    def set_dark(self, dark):
+        """外观切换 — 重绘所有自绘图块与空状态图标。"""
+        theme.set_active(dark)
+        self._paint_empty_glyph()
+        for plate in self.findChildren(ImagePlate):
+            plate.update()
 
     def set_methods(self, methods):
         self.sai_tab.set_methods(methods)

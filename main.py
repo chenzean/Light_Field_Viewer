@@ -19,6 +19,24 @@ from PyQt5.QtCore import Qt
 from views.main_window import MainWindow
 from controllers.app_controller import AppController
 from controllers.export_controller import ExportController
+from utils.resources import app_icon
+
+APP_ID = "chenzean.LightFieldViewer.V1"
+
+
+def _claim_taskbar_identity():
+    """让任务栏使用本程序的图标, 而不是 python.exe 的。
+
+    Windows 按 AppUserModelID 归组任务栏按钮; 不显式设置的话, 源码运行时
+    整个窗口会被归到 Python 名下, setWindowIcon 也就看不出效果。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
 
 
 def main():
@@ -26,9 +44,12 @@ def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
+    _claim_taskbar_identity()
+
     app = QApplication(sys.argv)
     app.setApplicationName("Light Field Viewer")
     app.setStyle("Fusion")
+    app.setWindowIcon(app_icon())
 
     # 创建主窗口
     window = MainWindow()

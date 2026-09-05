@@ -1,18 +1,166 @@
 """
 左侧设置面板 — 数据目录、角度分辨率、场景/帧选择、方法选择、矩形框管理、EPI 设置
+
+布局参照 macOS 系统设置: 每组是一张圆角卡片, 卡片内是「左标签 / 右控件」的
+等高行, 行与行之间用一条内缩的发丝线分隔。
 """
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-    QSpinBox, QComboBox, QCheckBox, QRadioButton, QPushButton,
-    QButtonGroup, QListWidget, QListWidgetItem, QFileDialog,
-    QLineEdit, QScrollArea, QAbstractItemView, QGridLayout, QSizePolicy, QTabWidget
+    QComboBox, QPushButton, QButtonGroup, QListWidget, QListWidgetItem,
+    QFileDialog, QScrollArea, QAbstractItemView, QSizePolicy,
+    QStackedWidget, QFrame, QColorDialog
 )
-from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QColor, QIcon, QPixmap
+from PyQt5.QtCore import pyqtSignal, Qt, QRectF, QSize
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
 
 import config as cfg
-from views.controls import SelectionBox, NumberBox
+from views.controls import (
+    SelectionBox, NumberBox, CheckBox, RadioButton, PushButton, TextField,
+    SegmentedControl, CheckListDelegate
+)
+
+# Row metrics shared by every card, so all pages line up vertically.
+ROW_MARGINS = (12, 5, 12, 5)
+STEPPER_WIDTH = 94
+COMBO_MIN_WIDTH = 132
+COMBO_MAX_WIDTH = 236
+SMALL_STEPPER_WIDTH = 80
+LABEL_WIDTH = 62
+
+
+def _separator():
+    line = QFrame()
+    line.setObjectName("rowSeparator")
+    line.setFrameShape(QFrame.NoFrame)
+    line.setFixedHeight(1)
+    return line
+
+
+def _row(label, widgets, expand=False, label_width=None, fill=False):
+    """One card row: label on the left, control(s) on the right.
+
+    ``expand`` lets the first control take the free space (text fields);
+    ``fill`` splits the row evenly between the controls (button clusters).
+    """
+    if not isinstance(widgets, (list, tuple)):
+        widgets = [widgets]
+    row = QWidget()
+    row.setObjectName("formRow")
+    box = QHBoxLayout(row)
+    box.setContentsMargins(*ROW_MARGINS)
+    box.setSpacing(8)
+    if label is not None:
+        caption = QLabel(label) if isinstance(label, str) else label
+        caption.setObjectName("rowLabel")
+        if label_width:
+            caption.setFixedWidth(label_width)
+        box.addWidget(caption)
+    if fill:
+        for widget in widgets:
+            box.addWidget(widget, 1)
+    elif expand:
+        for index, widget in enumerate(widgets):
+            box.addWidget(widget, 1 if index == 0 else 0)
+    else:
+        box.addStretch(1)
+        for widget in widgets:
+            box.addWidget(widget)
+    return row
+
+
+def _stack(*items):
+    """Group rows and separators into one widget that can be hidden together."""
+    holder = QWidget()
+    holder.setObjectName("formRow")
+    box = QVBoxLayout(holder)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(0)
+    for item in items:
+        box.addWidget(item)
+    return holder
+
+
+def _card(title, items):
+    """A titled rounded card; separators are inserted between the rows."""
+    group = QGroupBox(title)
+    box = QVBoxLayout(group)
+    box.setContentsMargins(0, 4, 0, 4)
+    box.setSpacing(0)
+    for index, item in enumerate(items):
+        if index:
+            box.addWidget(_separator())
+        box.addWidget(item)
+    return group
+
+
+def _segmented(buttons):
+    """Two or more radios rendered as one recessed segmented control."""
+    return SegmentedControl(buttons)
+
+
+def _selector(placeholder):
+    """Pop-up button sized to its content, as macOS sizes one.
+
+    Stretching it across the row is what made the control column look ragged
+    next to the narrow steppers, so it grows with its text between a floor and
+    a ceiling instead.
+    """
+    combo = SelectionBox()
+    combo.setPlaceholderText(placeholder)
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+    combo.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    combo.setMinimumWidth(COMBO_MIN_WIDTH)
+    combo.setMaximumWidth(COMBO_MAX_WIDTH)
+    combo.currentTextChanged.connect(
+        lambda text, box=combo: box.setToolTip(text))
+    return combo
+
+
+def _stepper(minimum, maximum, value, width=STEPPER_WIDTH, step=1):
+    spin = NumberBox()
+    spin.setRange(minimum, maximum)
+    spin.setSingleStep(step)
+    spin.setValue(value)
+    spin.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    spin.setFixedWidth(width)
+    return spin
+
+
+def _flat_list(minimum, maximum):
+    """A list that sits inside a card without a second border around it."""
+    widget = QListWidget()
+    widget.setObjectName("cardList")
+    widget.setMinimumHeight(minimum)
+    widget.setMaximumHeight(maximum)
+    widget.setFrameShape(QFrame.NoFrame)
+    widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    return widget
+
+
+def _rounded_chip(color, width, height, radius):
+    scale = 2
+    pixmap = QPixmap(width * scale, height * scale)
+    pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(scale)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor(0, 0, 0, 40), 1))
+    painter.setBrush(color)
+    painter.drawRoundedRect(
+        QRectF(0.5, 0.5, width - 1, height - 1), radius, radius)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _swatch(color, size=12):
+    """Rounded colour chip, the way macOS shows a tag colour."""
+    return _rounded_chip(QColor(*color), size, size, 3.5)
+
+
+def _swatch_bar(color):
+    """Wider chip used inside the colour-well button."""
+    return _rounded_chip(color, 40, 14, 4)
 
 
 class SettingsPanel(QWidget):
@@ -44,384 +192,300 @@ class SettingsPanel(QWidget):
         self._init_ui()
         self._building = False
 
+    # ------------------------------------------------------------------
+    # 构建
+    # ------------------------------------------------------------------
     def _init_ui(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        container = QWidget()
-        container.setObjectName("settingsContent")
-        layout = QVBoxLayout(container)
-        layout.setSpacing(10)
-        layout.setContentsMargins(4, 0, 10, 10)
-
-        # ---- 可视化模式选择 ----
-        grp_vis = QGroupBox("可视化模式")
-        hbox_vis = QHBoxLayout()
-        self.radio_sai = QRadioButton("子孔径图像 (SAI)")
-        self.radio_mli = QRadioButton("微透镜图像 (MLI)")
-        self.radio_sai.setProperty("segmented", True)
-        self.radio_mli.setProperty("segmented", True)
-        self.radio_sai.setChecked(True)
-        self.btn_grp_vis = QButtonGroup()
-        self.btn_grp_vis.addButton(self.radio_sai, 0)
-        self.btn_grp_vis.addButton(self.radio_mli, 1)
-        self.btn_grp_vis.buttonClicked.connect(self._on_vis_mode_changed)
-        hbox_vis.addWidget(self.radio_sai)
-        hbox_vis.addWidget(self.radio_mli)
-        grp_vis.setLayout(hbox_vis)
-        layout.addWidget(grp_vis)
-
-        # ---- 数据类型选择 ----
-        grp_mode = QGroupBox("数据类型")
-        hbox_mode = QHBoxLayout()
-        self.radio_image = QRadioButton("光场图像")
-        self.radio_video = QRadioButton("光场视频")
-        self.radio_image.setProperty("segmented", True)
-        self.radio_video.setProperty("segmented", True)
-        self.radio_video.setChecked(True)
-        self.btn_grp_mode = QButtonGroup()
-        self.btn_grp_mode.addButton(self.radio_image, 0)
-        self.btn_grp_mode.addButton(self.radio_video, 1)
-        self.btn_grp_mode.buttonClicked.connect(self._on_mode_changed)
-        hbox_mode.addWidget(self.radio_image)
-        hbox_mode.addWidget(self.radio_video)
-        grp_mode.setLayout(hbox_mode)
-        layout.addWidget(grp_mode)
-
-        # ---- 数据目录 ----
-        grp_dir = QGroupBox("数据目录")
-        vbox = QVBoxLayout()
-        # 数据根目录
-        hbox = QHBoxLayout()
-        self.txt_data_root = QLineEdit()
-        self.txt_data_root.setPlaceholderText("选择数据根目录...")
-        self.txt_data_root.setReadOnly(True)
-        btn_browse_data = QPushButton("浏览")
-        btn_browse_data.clicked.connect(self._browse_data_root)
-        hbox.addWidget(QLabel("数据:"))
-        hbox.addWidget(self.txt_data_root)
-        hbox.addWidget(btn_browse_data)
-        vbox.addLayout(hbox)
-        # 导出目录
-        hbox2 = QHBoxLayout()
-        self.txt_export_dir = QLineEdit()
-        self.txt_export_dir.setPlaceholderText("选择导出目录...")
-        self.txt_export_dir.setReadOnly(True)
-        btn_browse_export = QPushButton("浏览")
-        btn_browse_export.clicked.connect(self._browse_export_dir)
-        hbox2.addWidget(QLabel("导出:"))
-        hbox2.addWidget(self.txt_export_dir)
-        hbox2.addWidget(btn_browse_export)
-        vbox.addLayout(hbox2)
-        grp_dir.setLayout(vbox)
-        layout.addWidget(grp_dir)
-
-        # ---- 角度分辨率 (MLI 模式下隐藏) ----
-        self.grp_angular = QGroupBox("角度分辨率")
-        grp_angular = self.grp_angular
-        angular_grid = QGridLayout()
-        angular_grid.setHorizontalSpacing(12)
-        angular_grid.setVerticalSpacing(6)
-        self.spin_u_max = NumberBox()
-        self.spin_u_max.setRange(1, 20)
-        self.spin_u_max.setValue(cfg.DEFAULT_ANGULAR_U)
-        self.spin_v_max = NumberBox()
-        self.spin_v_max.setRange(1, 20)
-        self.spin_v_max.setValue(cfg.DEFAULT_ANGULAR_V)
-        for column, (text, spin) in enumerate([
-            ("U 方向", self.spin_u_max), ("V 方向", self.spin_v_max)
-        ]):
-            label = QLabel(text)
-            label.setBuddy(spin)
-            spin.setAlignment(Qt.AlignCenter)
-            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            angular_grid.addWidget(label, 0, column)
-            angular_grid.addWidget(spin, 1, column)
-            angular_grid.setColumnStretch(column, 1)
-        self.spin_u_max.valueChanged.connect(self._on_angular_changed)
-        self.spin_v_max.valueChanged.connect(self._on_angular_changed)
-        grp_angular.setLayout(angular_grid)
-        layout.addWidget(grp_angular)
-
-        # ---- 场景 / 帧 / 角度坐标 ----
-        grp_sel = QGroupBox("数据选择")
-        vbox2 = QVBoxLayout()
-        vbox2.setSpacing(12)
-        # 场景
-        hbox_scene = QHBoxLayout()
-        hbox_scene.setContentsMargins(0, 0, 0, 0)
-        hbox_scene.setSpacing(8)
-        scene_label = QLabel("场景")
-        scene_label.setFixedWidth(36)
-        hbox_scene.addWidget(scene_label)
-        self.combo_scene = SelectionBox()
-        self.combo_scene.currentTextChanged.connect(self._on_scene_changed)
-        self.combo_scene.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.combo_scene.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.combo_scene.setMinimumContentsLength(8)
-        scene_label.setBuddy(self.combo_scene)
-        hbox_scene.addWidget(self.combo_scene, 1)
-        vbox2.addLayout(hbox_scene)
-        # 帧 (光场视频时可用, 光场图像时隐藏)
-        self.hbox_frame_widget = QWidget()
-        hbox_frame = QHBoxLayout(self.hbox_frame_widget)
-        hbox_frame.setContentsMargins(0, 0, 0, 0)
-        hbox_frame.setSpacing(8)
-        frame_label = QLabel("帧")
-        frame_label.setFixedWidth(36)
-        hbox_frame.addWidget(frame_label)
-        self.combo_frame = SelectionBox()
-        self.combo_frame.currentIndexChanged.connect(self._on_frame_changed)
-        self.combo_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        frame_label.setBuddy(self.combo_frame)
-        hbox_frame.addWidget(self.combo_frame, 1)
-        vbox2.addWidget(self.hbox_frame_widget)
-        # 角度坐标 (MLI 模式下隐藏)
-        self.widget_uv = QWidget()
-        uv_grid = QGridLayout(self.widget_uv)
-        uv_grid.setContentsMargins(0, 0, 0, 0)
-        uv_grid.setHorizontalSpacing(12)
-        uv_grid.setVerticalSpacing(6)
-        self.spin_u = NumberBox()
-        self.spin_u.setRange(1, cfg.DEFAULT_ANGULAR_U)
-        self.spin_u.setValue(1)
-        self.spin_v = NumberBox()
-        self.spin_v.setRange(1, cfg.DEFAULT_ANGULAR_V)
-        self.spin_v.setValue(1)
-        for column, (text, spin) in enumerate([
-            ("视角 u", self.spin_u), ("视角 v", self.spin_v)
-        ]):
-            label = QLabel(text)
-            label.setBuddy(spin)
-            spin.setAlignment(Qt.AlignCenter)
-            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            uv_grid.addWidget(label, 0, column)
-            uv_grid.addWidget(spin, 1, column)
-            uv_grid.setColumnStretch(column, 1)
-        self.spin_u.valueChanged.connect(self._on_uv_changed)
-        self.spin_v.valueChanged.connect(self._on_uv_changed)
-        vbox2.addWidget(self.widget_uv)
-        grp_sel.setLayout(vbox2)
-        layout.addWidget(grp_sel)
-
-        # ---- 方法选择 ----
-        grp_methods = QGroupBox("方法选择")
-        vbox3 = QVBoxLayout()
-        hbox_btn = QHBoxLayout()
-        btn_select_all = QPushButton("全选")
-        btn_select_all.clicked.connect(self._select_all_methods)
-        btn_deselect_all = QPushButton("取消全选")
-        btn_deselect_all.clicked.connect(self._deselect_all_methods)
-        hbox_btn.addWidget(btn_select_all)
-        hbox_btn.addWidget(btn_deselect_all)
-        vbox3.addLayout(hbox_btn)
-        self.list_methods = QListWidget()
-        self.list_methods.setMinimumHeight(100)
-        self.list_methods.setMaximumHeight(160)
-        self.list_methods.setSelectionMode(QAbstractItemView.NoSelection)
-        self.list_methods.itemChanged.connect(self._on_methods_changed)
-        vbox3.addWidget(self.list_methods)
-        grp_methods.setLayout(vbox3)
-        layout.addWidget(grp_methods)
-
-        # ---- 矩形框管理 ----
-        grp_rect = QGroupBox("矩形框管理")
-        vbox4 = QVBoxLayout()
-        hbox_rect_btn = QHBoxLayout()
-        btn_add_rect = QPushButton("添加框")
-        btn_add_rect.clicked.connect(lambda: self.rect_added.emit())
-        btn_del_rect = QPushButton("删除框")
-        btn_del_rect.setProperty("destructive", True)
-        btn_del_rect.clicked.connect(self._on_remove_rect)
-        btn_clear_rect = QPushButton("清空全部")
-        btn_clear_rect.setProperty("destructive", True)
-        btn_clear_rect.clicked.connect(lambda: self.rects_cleared.emit())
-        hbox_rect_btn.addWidget(btn_add_rect)
-        hbox_rect_btn.addWidget(btn_del_rect)
-        hbox_rect_btn.addWidget(btn_clear_rect)
-        vbox4.addLayout(hbox_rect_btn)
-        # 框列表
-        self.list_rects = QListWidget()
-        self.list_rects.setMinimumHeight(80)
-        self.list_rects.setMaximumHeight(120)
-        self.list_rects.currentRowChanged.connect(self._on_rect_selected)
-        vbox4.addWidget(self.list_rects)
-        # 选中框参数
-        vbox4.addWidget(QLabel("选中框参数:"))
-        grid_rect = QGridLayout()
-        grid_rect.setHorizontalSpacing(12)
-        for index, (name, attr, default) in enumerate([
-            ("X:", 'spin_rect_x', cfg.DEFAULT_RECT_X),
-            ("Y:", 'spin_rect_y', cfg.DEFAULT_RECT_Y),
-            ("W:", 'spin_rect_w', cfg.DEFAULT_RECT_W),
-            ("H:", 'spin_rect_h', cfg.DEFAULT_RECT_H),
-        ]):
-            hb = QHBoxLayout()
-            label = QLabel(name)
-            label.setFixedWidth(22)
-            hb.addWidget(label)
-            spin = QSpinBox()
-            spin.setRange(0, 4096)
-            spin.setValue(default)
-            spin.valueChanged.connect(self._on_rect_params_changed)
-            setattr(self, attr, spin)
-            hb.addWidget(spin)
-            grid_rect.addLayout(hb, index // 2, index % 2)
-        # 粗细
-        hb_thick = QHBoxLayout()
-        thickness_label = QLabel("线宽")
-        thickness_label.setFixedWidth(48)
-        hb_thick.addWidget(thickness_label)
-        self.spin_rect_thickness = QSpinBox()
-        self.spin_rect_thickness.setRange(1, 20)
-        self.spin_rect_thickness.setValue(cfg.DEFAULT_RECT_THICKNESS)
-        self.spin_rect_thickness.valueChanged.connect(self._on_rect_params_changed)
-        hb_thick.addWidget(self.spin_rect_thickness)
-        grid_rect.addLayout(hb_thick, 2, 0, 1, 2)
-        # RGB 颜色输入
-        hb_color = QHBoxLayout()
-        hb_color.addWidget(QLabel("颜色 R:"))
-        self.spin_rect_r = QSpinBox()
-        self.spin_rect_r.setRange(0, 255)
-        self.spin_rect_r.setValue(255)
-        self.spin_rect_r.valueChanged.connect(self._on_rect_params_changed)
-        hb_color.addWidget(self.spin_rect_r)
-        hb_color.addWidget(QLabel("G:"))
-        self.spin_rect_g = QSpinBox()
-        self.spin_rect_g.setRange(0, 255)
-        self.spin_rect_g.setValue(0)
-        self.spin_rect_g.valueChanged.connect(self._on_rect_params_changed)
-        hb_color.addWidget(self.spin_rect_g)
-        hb_color.addWidget(QLabel("B:"))
-        self.spin_rect_b = QSpinBox()
-        self.spin_rect_b.setRange(0, 255)
-        self.spin_rect_b.setValue(0)
-        self.spin_rect_b.valueChanged.connect(self._on_rect_params_changed)
-        hb_color.addWidget(self.spin_rect_b)
-        grid_rect.addLayout(hb_color, 3, 0, 1, 2)
-        vbox4.addLayout(grid_rect)
-        grp_rect.setLayout(vbox4)
-        layout.addWidget(grp_rect)
-
-        # ---- 残差图设置 ----
-        grp_residual = QGroupBox("残差图")
-        vbox_res = QVBoxLayout()
-        self.chk_residual = QCheckBox("显示残差图 (与 Ground_Truth 对比)")
-        self.chk_residual.setChecked(False)
-        self.chk_residual.stateChanged.connect(self._on_residual_changed)
-        vbox_res.addWidget(self.chk_residual)
-        grp_residual.setLayout(vbox_res)
-        layout.addWidget(grp_residual)
-
-        # ---- EPI 设置 (MLI 模式下隐藏) ----
-        self.grp_epi = QGroupBox("EPI 设置")
-        grp_epi = self.grp_epi
-        vbox5 = QVBoxLayout()
-        self.chk_epi = QCheckBox("显示 EPI")
-        self.chk_epi.setChecked(False)
-        self.chk_epi.stateChanged.connect(self._on_epi_changed)
-        vbox5.addWidget(self.chk_epi)
-        # 方向单选
-        hbox_orient = QHBoxLayout()
-        self.radio_h_epi = QRadioButton("水平")
-        self.radio_v_epi = QRadioButton("垂直")
-        self.radio_h_epi.setChecked(True)
-        self.btn_grp_epi = QButtonGroup()
-        self.btn_grp_epi.addButton(self.radio_h_epi, 0)
-        self.btn_grp_epi.addButton(self.radio_v_epi, 1)
-        self.btn_grp_epi.buttonClicked.connect(self._on_epi_changed)
-        hbox_orient.addWidget(self.radio_h_epi)
-        hbox_orient.addWidget(self.radio_v_epi)
-        vbox5.addLayout(hbox_orient)
-        # EPI 参数
-        for name, attr, default, max_val in [
-            ("角度索引:", 'spin_epi_angular', cfg.DEFAULT_EPI_ANGULAR_IDX, 20),
-            ("空间位置:", 'spin_epi_spatial', cfg.DEFAULT_EPI_SPATIAL_POS, 4096),
-            ("裁剪起始:", 'spin_epi_crop_start', cfg.DEFAULT_EPI_CROP_START, 4096),
-            ("裁剪结束:", 'spin_epi_crop_end', cfg.DEFAULT_EPI_CROP_END, 4096),
-            ("高度拉伸:", 'spin_epi_stretch', cfg.DEFAULT_EPI_STRETCH, 20),
-        ]:
-            hb = QHBoxLayout()
-            hb.addWidget(QLabel(name))
-            spin = QSpinBox()
-            hb.itemAt(0).widget().setFixedWidth(76)
-            spin.setRange(1, max_val)
-            spin.setValue(default)
-            spin.valueChanged.connect(self._on_epi_changed)
-            setattr(self, attr, spin)
-            hb.addWidget(spin)
-            vbox5.addLayout(hb)
-        grp_epi.setLayout(vbox5)
-        layout.addWidget(grp_epi)
-
-        # ---- 导出 DPI 设置 ----
-        grp_dpi = QGroupBox("导出 DPI")
-        hbox_dpi = QHBoxLayout()
-        hbox_dpi.addWidget(QLabel("颜色条 DPI:"))
-        self.spin_dpi = QSpinBox()
-        self.spin_dpi.setRange(50, 600)
-        self.spin_dpi.setValue(150)
-        self.spin_dpi.setSingleStep(50)
-        hbox_dpi.addWidget(self.spin_dpi)
-        grp_dpi.setLayout(hbox_dpi)
-        layout.addWidget(grp_dpi)
-
-        # Separate everyday browsing from annotation and export settings.
-        display_group = QGroupBox("显示方式")
-        display_layout = QGridLayout(display_group)
-        display_layout.setHorizontalSpacing(6)
-        display_layout.setVerticalSpacing(8)
-        for row, (caption, first, second, first_text, second_text) in enumerate([
-            ("模式", self.radio_sai, self.radio_mli, "SAI", "MLI"),
-            ("类型", self.radio_image, self.radio_video, "图像", "视频"),
-        ]):
-            label = QLabel(caption)
-            label.setFixedWidth(36)
-            display_layout.addWidget(label, row, 0)
-            for column, button, text in [(1, first, first_text), (2, second, second_text)]:
-                button.setToolTip(button.text())
-                button.setText(text)
-                display_layout.addWidget(button, row, column)
-                display_layout.setColumnStretch(column, 1)
-        vbox.removeItem(hbox2)
-        export_group = QGroupBox("保存位置")
-        export_layout = QVBoxLayout(export_group)
-        export_layout.addLayout(hbox2)
-        while layout.count():
-            layout.takeAt(0)
-
-        self.sections = QTabWidget()
+        # A QTabBar always spans its parent's full width, which would stretch
+        # the pill across the sidebar; a stack behind a segmented control gives
+        # the macOS inspector shape while keeping count/setCurrentIndex/widget.
+        self.sections = QStackedWidget()
         self.sections.setObjectName("inspectorTabs")
-        for title, groups in [
-            ("数据", [grp_dir, display_group, grp_angular, grp_sel, grp_methods]),
-            ("标注", [grp_rect, grp_residual, grp_epi]),
-            ("导出", [export_group, grp_dpi]),
-        ]:
-            page = QWidget()
-            page.setObjectName("settingsContent")
-            page_layout = QVBoxLayout(page)
-            page_layout.setContentsMargins(16, 12, 16, 16)
-            page_layout.setSpacing(12)
-            for group in groups:
-                page_layout.addWidget(group)
-            page_layout.addStretch()
-            area = QScrollArea()
-            area.setWidgetResizable(True)
-            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            area.setWidget(page)
-            self.sections.addTab(area, title)
-        scroll.deleteLater()
-        container.deleteLater()
+        self.section_buttons = QButtonGroup(self)
+        tabs = []
+        for index, (title, groups) in enumerate([
+            ("数据", self._data_groups()),
+            ("标注", self._annotation_groups()),
+            ("导出", self._export_groups()),
+        ]):
+            self.sections.addWidget(self._page(groups))
+            button = RadioButton(title)
+            button.setChecked(index == 0)
+            self.section_buttons.addButton(button, index)
+            tabs.append(button)
+        self.section_buttons.buttonClicked.connect(
+            lambda button: self.sections.setCurrentIndex(
+                self.section_buttons.id(button)))
+        self.sections.currentChanged.connect(self._sync_section_buttons)
+
+        picker = QWidget()
+        picker_layout = QHBoxLayout(picker)
+        picker_layout.setContentsMargins(14, 0, 14, 0)
+        picker_layout.addStretch(1)
+        picker_layout.addWidget(_segmented(tabs))
+        picker_layout.addStretch(1)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 12, 0, 0)
-        heading = QLabel("工作区设置")
-        heading.setObjectName("sidebarHeading")
-        main_layout.addWidget(heading)
-        main_layout.addWidget(self.sections)
+        main_layout.setSpacing(10)
+        main_layout.addWidget(picker)
+        main_layout.addWidget(self.sections, 1)
         for button in self.findChildren(QPushButton):
             button.setCursor(Qt.PointingHandCursor)
+
+    def _sync_section_buttons(self, index):
+        button = self.section_buttons.button(index)
+        if button is not None:
+            button.setChecked(True)
+
+    def _page(self, groups):
+        page = QWidget()
+        page.setObjectName("settingsContent")
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(14, 10, 14, 16)
+        page_layout.setSpacing(14)
+        for group in groups:
+            page_layout.addWidget(group)
+        page_layout.addStretch()
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        area.setWidget(page)
+        return area
+
+    # ---- 「数据」页 ----
+    def _data_groups(self):
+        # 数据根目录
+        self.txt_data_root = TextField()
+        self.txt_data_root.setPlaceholderText("尚未选择")
+        self.txt_data_root.setReadOnly(True)
+        browse_data = PushButton("浏览…")
+        browse_data.clicked.connect(self._browse_data_root)
+        grp_dir = _card("数据目录", [
+            _row("数据", [self.txt_data_root, browse_data], expand=True,
+                 label_width=34),
+        ])
+
+        # 可视化模式 / 数据类型 — 两个分段控件
+        self.radio_sai = RadioButton("子孔径图像 (SAI)")
+        self.radio_mli = RadioButton("微透镜图像 (MLI)")
+        self.radio_sai.setChecked(True)
+        self.btn_grp_vis = QButtonGroup(self)
+        self.btn_grp_vis.addButton(self.radio_sai, 0)
+        self.btn_grp_vis.addButton(self.radio_mli, 1)
+        self.btn_grp_vis.buttonClicked.connect(self._on_vis_mode_changed)
+
+        self.radio_image = RadioButton("光场图像")
+        self.radio_video = RadioButton("光场视频")
+        self.radio_video.setChecked(True)
+        self.btn_grp_mode = QButtonGroup(self)
+        self.btn_grp_mode.addButton(self.radio_image, 0)
+        self.btn_grp_mode.addButton(self.radio_video, 1)
+        self.btn_grp_mode.buttonClicked.connect(self._on_mode_changed)
+
+        for button, short in [(self.radio_sai, "SAI"), (self.radio_mli, "MLI"),
+                              (self.radio_image, "图像"), (self.radio_video, "视频")]:
+            button.setToolTip(button.text())
+            button.setText(short)
+
+        display_group = _card("显示方式", [
+            _row("模式", _segmented([self.radio_sai, self.radio_mli]),
+                 label_width=34),
+            _row("类型", _segmented([self.radio_image, self.radio_video]),
+                 label_width=34),
+        ])
+
+        # 角度分辨率 (MLI 模式下隐藏)
+        self.spin_u_max = _stepper(1, 20, cfg.DEFAULT_ANGULAR_U)
+        self.spin_v_max = _stepper(1, 20, cfg.DEFAULT_ANGULAR_V)
+        self.spin_u_max.valueChanged.connect(self._on_angular_changed)
+        self.spin_v_max.valueChanged.connect(self._on_angular_changed)
+        self.grp_angular = _card("角度分辨率", [
+            _row("U 方向", self.spin_u_max),
+            _row("V 方向", self.spin_v_max),
+        ])
+
+        # 场景 / 帧 / 视角
+        self.combo_scene = _selector("尚未载入场景")
+        self.combo_scene.currentTextChanged.connect(self._on_scene_changed)
+        scene_row = _row("场景", self.combo_scene, label_width=34)
+
+        self.combo_frame = _selector("尚未载入帧")
+        self.combo_frame.currentIndexChanged.connect(self._on_frame_changed)
+        self.hbox_frame_widget = _stack(
+            _separator(), _row("帧", self.combo_frame, label_width=34))
+
+        self.spin_u = _stepper(1, cfg.DEFAULT_ANGULAR_U, 1)
+        self.spin_v = _stepper(1, cfg.DEFAULT_ANGULAR_V, 1)
+        self.spin_u.valueChanged.connect(self._on_uv_changed)
+        self.spin_v.valueChanged.connect(self._on_uv_changed)
+        self.widget_uv = _stack(
+            _separator(), _row("视角 u", self.spin_u),
+            _separator(), _row("视角 v", self.spin_v))
+
+        grp_sel = _card("数据选择", [scene_row])
+        grp_sel.layout().addWidget(self.hbox_frame_widget)
+        grp_sel.layout().addWidget(self.widget_uv)
+
+        # 方法选择
+        select_all = PushButton("全选")
+        select_all.clicked.connect(self._select_all_methods)
+        deselect_all = PushButton("取消全选")
+        deselect_all.clicked.connect(self._deselect_all_methods)
+        self.list_methods = _flat_list(104, 168)
+        self.list_methods.setSelectionMode(QAbstractItemView.NoSelection)
+        self.list_methods.setItemDelegate(CheckListDelegate(self.list_methods))
+        self.list_methods.itemChanged.connect(self._on_methods_changed)
+        grp_methods = _card("方法选择", [
+            _row(None, [select_all, deselect_all], fill=True),
+            self.list_methods,
+        ])
+
+        return [grp_dir, display_group, self.grp_angular, grp_sel, grp_methods]
+
+    # ---- 「标注」页 ----
+    def _annotation_groups(self):
+        add_rect = PushButton("添加")
+        add_rect.clicked.connect(lambda: self.rect_added.emit())
+        del_rect = PushButton("删除")
+        del_rect.setProperty("destructive", True)
+        del_rect.clicked.connect(self._on_remove_rect)
+        clear_rect = PushButton("清空")
+        clear_rect.setProperty("destructive", True)
+        clear_rect.clicked.connect(lambda: self.rects_cleared.emit())
+
+        self.list_rects = _flat_list(84, 124)
+        self.list_rects.currentRowChanged.connect(self._on_rect_selected)
+
+        self.spin_rect_x = _stepper(0, 4096, cfg.DEFAULT_RECT_X, SMALL_STEPPER_WIDTH)
+        self.spin_rect_y = _stepper(0, 4096, cfg.DEFAULT_RECT_Y, SMALL_STEPPER_WIDTH)
+        self.spin_rect_w = _stepper(0, 4096, cfg.DEFAULT_RECT_W, SMALL_STEPPER_WIDTH)
+        self.spin_rect_h = _stepper(0, 4096, cfg.DEFAULT_RECT_H, SMALL_STEPPER_WIDTH)
+        self.spin_rect_thickness = _stepper(1, 20, cfg.DEFAULT_RECT_THICKNESS)
+        # 颜色改用色板按钮 (QColorDialog), 三个分量仍作为取值来源保留
+        self.spin_rect_r = _stepper(0, 255, 255)
+        self.spin_rect_g = _stepper(0, 255, 0)
+        self.spin_rect_b = _stepper(0, 255, 0)
+        for spin in (self.spin_rect_r, self.spin_rect_g, self.spin_rect_b):
+            spin.setParent(self)
+            spin.hide()
+            spin.valueChanged.connect(self._sync_color_well)
+        for spin in (self.spin_rect_x, self.spin_rect_y, self.spin_rect_w,
+                     self.spin_rect_h, self.spin_rect_thickness,
+                     self.spin_rect_r, self.spin_rect_g, self.spin_rect_b):
+            spin.valueChanged.connect(self._on_rect_params_changed)
+
+        self.btn_rect_color = PushButton()
+        self.btn_rect_color.setObjectName("colorWell")
+        self.btn_rect_color.setAccessibleName("矩形框颜色")
+        self.btn_rect_color.setToolTip("选择矩形框颜色")
+        self.btn_rect_color.setFixedSize(54, 24)
+        self.btn_rect_color.setIconSize(QSize(40, 14))
+        self.btn_rect_color.clicked.connect(self._pick_rect_color)
+        self._sync_color_well()
+
+        self.grp_rect = _card("矩形框管理", [
+            _row(None, [add_rect, del_rect, clear_rect], fill=True),
+            self.list_rects,
+            _row("位置", [self._mini("X", self.spin_rect_x),
+                          self._mini("Y", self.spin_rect_y)], label_width=34),
+            _row("大小", [self._mini("宽", self.spin_rect_w),
+                          self._mini("高", self.spin_rect_h)], label_width=34),
+            _row("线宽", self.spin_rect_thickness, label_width=34),
+            _row("颜色", self.btn_rect_color, label_width=34),
+        ])
+        grp_rect = self.grp_rect
+
+        self.chk_residual = CheckBox("显示残差图 (与 Ground_Truth 对比)")
+        self.chk_residual.setChecked(False)
+        self.chk_residual.stateChanged.connect(self._on_residual_changed)
+        grp_residual = _card("残差图", [
+            _row(None, self.chk_residual, expand=True),
+        ])
+
+        self.chk_epi = CheckBox("显示 EPI")
+        self.chk_epi.setChecked(False)
+        self.chk_epi.stateChanged.connect(self._on_epi_changed)
+        self.radio_h_epi = RadioButton("水平")
+        self.radio_v_epi = RadioButton("垂直")
+        self.radio_h_epi.setChecked(True)
+        self.btn_grp_epi = QButtonGroup(self)
+        self.btn_grp_epi.addButton(self.radio_h_epi, 0)
+        self.btn_grp_epi.addButton(self.radio_v_epi, 1)
+        self.btn_grp_epi.buttonClicked.connect(self._on_epi_changed)
+
+        epi_rows = [
+            _row(None, self.chk_epi, expand=True),
+            _row("方向", _segmented([self.radio_h_epi, self.radio_v_epi]),
+                 label_width=LABEL_WIDTH),
+        ]
+        for caption, attr, default, maximum in [
+            ("角度索引", 'spin_epi_angular', cfg.DEFAULT_EPI_ANGULAR_IDX, 20),
+            ("空间位置", 'spin_epi_spatial', cfg.DEFAULT_EPI_SPATIAL_POS, 4096),
+            ("裁剪起始", 'spin_epi_crop_start', cfg.DEFAULT_EPI_CROP_START, 4096),
+            ("裁剪结束", 'spin_epi_crop_end', cfg.DEFAULT_EPI_CROP_END, 4096),
+            ("高度拉伸", 'spin_epi_stretch', cfg.DEFAULT_EPI_STRETCH, 20),
+        ]:
+            spin = _stepper(1, maximum, default)
+            spin.valueChanged.connect(self._on_epi_changed)
+            setattr(self, attr, spin)
+            epi_rows.append(_row(caption, spin, label_width=LABEL_WIDTH))
+        self.grp_epi = _card("EPI 设置", epi_rows)
+
+        return [grp_rect, grp_residual, self.grp_epi]
+
+    # ---- 「导出」页 ----
+    def _export_groups(self):
+        self.txt_export_dir = TextField()
+        self.txt_export_dir.setPlaceholderText("尚未选择")
+        self.txt_export_dir.setReadOnly(True)
+        browse_export = PushButton("浏览…")
+        browse_export.clicked.connect(self._browse_export_dir)
+        export_group = _card("保存位置", [
+            _row("目录", [self.txt_export_dir, browse_export], expand=True,
+                 label_width=34),
+        ])
+
+        self.spin_dpi = _stepper(50, 600, 150, step=50)
+        grp_dpi = _card("导出 DPI", [
+            _row("颜色条", self.spin_dpi, label_width=LABEL_WIDTH),
+        ])
+        return [export_group, grp_dpi]
+
+    # ---- 颜色色板 ----
+    def _rect_color(self):
+        return QColor(self.spin_rect_r.value(), self.spin_rect_g.value(),
+                      self.spin_rect_b.value())
+
+    def _sync_color_well(self, *_):
+        self.btn_rect_color.setIcon(_swatch_bar(self._rect_color()))
+
+    def _pick_rect_color(self):
+        chosen = QColorDialog.getColor(
+            self._rect_color(), self, "选择矩形框颜色")
+        if not chosen.isValid():
+            return
+        self._building = True
+        self.spin_rect_r.setValue(chosen.red())
+        self.spin_rect_g.setValue(chosen.green())
+        self.spin_rect_b.setValue(chosen.blue())
+        self._building = False
+        self._sync_color_well()
+        self._on_rect_params_changed()
+
+    @staticmethod
+    def _mini(caption, spin):
+        """A stepper with a one-character caption in front of it."""
+        holder = QWidget()
+        holder.setObjectName("formRow")
+        box = QHBoxLayout(holder)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(5)
+        label = QLabel(caption)
+        label.setProperty("typography", "caption")
+        box.addWidget(label)
+        box.addWidget(spin)
+        return holder
 
     # ---- 可视化模式切换 ----
     def _on_vis_mode_changed(self):
@@ -557,12 +621,18 @@ class SettingsPanel(QWidget):
         self._building = True
         self.combo_scene.clear()
         self.combo_scene.addItems(scenes)
+        # A placeholder keeps QComboBox on index -1 after insertion, and the
+        # controller reads get_current_scene(), so select the first entry back.
+        if scenes:
+            self.combo_scene.setCurrentIndex(0)
         self._building = False
 
     def set_frames(self, frames: list):
         self._building = True
         self.combo_frame.clear()
         self.combo_frame.addItems(frames)
+        if frames:
+            self.combo_frame.setCurrentIndex(0)
         self._building = False
 
     def set_angular_resolution(self, u_max: int, v_max: int):
@@ -580,13 +650,9 @@ class SettingsPanel(QWidget):
         current = self.list_rects.currentRow()
         self.list_rects.clear()
         for i, r in enumerate(rects):
-            color = r['color']
-            label = f"框{i+1} ({r['x']},{r['y']},{r['w']},{r['h']})"
+            label = f"框 {i+1}   {r['x']}, {r['y']}   {r['w']}×{r['h']}"
             item = QListWidgetItem(label)
-            # 用颜色块作为图标
-            pix = QPixmap(16, 16)
-            pix.fill(QColor(*color))
-            item.setIcon(QIcon(pix))
+            item.setIcon(_swatch(r['color']))
             self.list_rects.addItem(item)
         if 0 <= current < self.list_rects.count():
             self.list_rects.setCurrentRow(current)
@@ -606,6 +672,7 @@ class SettingsPanel(QWidget):
         self.spin_rect_r.setValue(color[0])
         self.spin_rect_g.setValue(color[1])
         self.spin_rect_b.setValue(color[2])
+        self._sync_color_well()
         self._building = False
 
     def get_selected_methods(self) -> list:

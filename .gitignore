@@ -20,6 +20,8 @@ env/
 build/
 dist/
 *.spec
+# 打包配置是构建的一部分, 不跟踪的话别人克隆后 build.bat 跑不通
+!LightFieldViewer.spec
 *.exe
 
 # Egg / distribution

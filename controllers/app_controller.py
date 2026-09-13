@@ -12,7 +12,7 @@ from PyQt5.QtCore import QTimer
 
 from models.light_field_data import LightFieldData
 from models.rect_annotator import (
-    draw_multiple_rectangles, crop_region, crop_with_border
+    draw_multiple_rectangles, crop_with_border
 )
 from models.epi_extractor import (
     horizontal_epi, vertical_epi, crop_epi, draw_epi_region
@@ -386,56 +386,38 @@ class AppController:
         if self.residual_enabled and 'Ground_Truth' in self.selected_methods:
             gt_img = loader('Ground_Truth')
 
-        # 第一遍: 裁剪图 + 残差 (仅裁剪区域, 不算全图)
-        # raw_res_crops: {method: [np.ndarray, ...]}  每个矩形框的残差
-        raw_res_crops = {}
+        # 与导出一致: 使用所有方法全图残差的最大值作为统一色标。
+        raw_residuals = {}
+        global_vmax = 0.0
         for method in self.selected_methods:
             img = loader(method)
             if img is None:
                 crop_data[method] = []
                 continue
             crops = []
-            res_list = []
+            if self.residual_enabled and method != 'Ground_Truth' \
+                    and gt_img is not None and self.rects:
+                res_full = compute_residual(img, gt_img)
+                raw_residuals[method] = res_full
+                global_vmax = max(global_vmax, float(res_full.max()))
             for r in self.rects:
                 crop = crop_with_border(
                     img, r['x'], r['y'], r['w'], r['h'],
                     r['color'], r['thickness'])
                 crops.append(ndarray_to_qpixmap(crop))
 
-                if self.residual_enabled and method != 'Ground_Truth' \
-                        and gt_img is not None:
-                    # 只裁剪区域计算残差 (比全图快很多)
-                    img_crop = crop_region(img, r['x'], r['y'], r['w'], r['h'])
-                    gt_crop = crop_region(gt_img, r['x'], r['y'], r['w'], r['h'])
-                    res_list.append(compute_residual(img_crop, gt_crop))
-
             crop_data[method] = crops
-            if res_list:
-                raw_res_crops[method] = res_list
 
-        # 第二遍: 每个矩形框的全局 vmax → 伪彩色 → 画框 + 生成颜色条
+        # 第二遍: 全图伪彩色 → 扩展裁剪并画框, 与导出保持相同顺序。
         colorbar_pixmap = None
-        if self.residual_enabled and gt_img is not None and raw_res_crops:
-            # 每个矩形框取所有方法的 max
-            num_rects = len(self.rects)
-            rect_vmax = []
-            for i in range(num_rects):
-                vm = 0.0
-                for method in raw_res_crops:
-                    if i < len(raw_res_crops[method]):
-                        vm = max(vm, float(raw_res_crops[method][i].max()))
-                rect_vmax.append(vm)
-            global_vmax = max(rect_vmax) if rect_vmax else 0.0
-
-            for method, res_list in raw_res_crops.items():
+        if raw_residuals:
+            for method, res_full in raw_residuals.items():
+                res_colored = residual_to_colormap(res_full, vmax=global_vmax)
                 res_maps = []
-                for i, res in enumerate(res_list):
-                    vm = rect_vmax[i] if i < len(rect_vmax) else global_vmax
-                    res_colored = residual_to_colormap(res, vmax=vm)
+                for r in self.rects:
                     res_crop = crop_with_border(
-                        res_colored, 0, 0, res_colored.shape[1],
-                        res_colored.shape[0],
-                        self.rects[i]['color'], self.rects[i]['thickness'])
+                        res_colored, r['x'], r['y'], r['w'], r['h'],
+                        r['color'], r['thickness'])
                     res_maps.append(ndarray_to_qpixmap(res_crop))
                 residual_data[method] = res_maps
 

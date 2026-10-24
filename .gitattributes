@@ -1,0 +1,2 @@
+# Keep release records byte-identical to their published checksums on Windows.
+docs/releases/** text eol=lf

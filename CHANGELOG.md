@@ -39,7 +39,7 @@
 
 - 使用现有 Python 3.10.19 / PyInstaller 6.21.0 环境按仓库 spec 构建，未重新安装依赖；应用版本号统一为 `1.1.2`。
 - 正式 EXE 已检查从项目目录外启动及版本标题。发布前的功能候选版本已验证真实数据加载，用户试用确认可用及共享色标加长效果。
-- Release 附带 `LightFieldViewer.exe`、`SHA256SUMS.txt` 和 `build-verification.json`。EXE 独立自动化导出验收未完成，源码残差测试不替代该项验证。
+- Release 附带 `LightFieldViewer.exe`；[SHA256SUMS.txt](docs/releases/v1.1.2/SHA256SUMS.txt) 和 [build-verification.json](docs/releases/v1.1.2/build-verification.json) 随仓库保存，并在发布页提供链接。EXE 独立自动化导出验收未完成，源码残差测试不替代该项验证。
 
 ---
 

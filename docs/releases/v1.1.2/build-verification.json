@@ -1,0 +1,72 @@
+{
+  "version": "1.1.2",
+  "tag": "v1.1.2",
+  "release_date": "2026-10-24",
+  "timezone": "Asia/Shanghai",
+  "source_commit": "599369d6c5c64a564d223aeb89a8621a5f9c543e",
+  "build": {
+    "python": "3.10.19",
+    "pyinstaller": "6.21.0",
+    "PyQt5": "5.15.11",
+    "numpy": "1.26.4",
+    "Pillow": "12.0.0",
+    "matplotlib": "3.10.8",
+    "command": "python -m PyInstaller --clean --noconfirm --distpath dist/1.1.2 --workpath build/1.1.2 LightFieldViewer.spec",
+    "exit_code": 0,
+    "dependencies_installed_during_build": false,
+    "warnings": [
+      "Hidden import \"sip\" not found; PyQt5.sip is bundled and native startup passed."
+    ]
+  },
+  "artifact": {
+    "filename": "LightFieldViewer.exe",
+    "size_bytes": 67423605,
+    "sha256": "4bc1bea831d4d408bc7d2725fc34f57943a7a320a021eebb08a3dac635aa9947"
+  },
+  "verification": {
+    "source_regression_tests": {
+      "passed": 64,
+      "result": "passed",
+      "command": "python -m unittest discover -s tests -v",
+      "qt_platform": "windows"
+    },
+    "release_exe_startup": {
+      "result": "passed",
+      "launched_outside_project_directory": true,
+      "window_title": "Light Field Viewer 1.1.2 — 光场图像查看器",
+      "native_main_window_inspected": true
+    },
+    "candidate_functional_checks": {
+      "version": "1.1.2-dev",
+      "real_dataset_loading": "observed: 40 methods, 10 scenes, 5x5 angular resolution",
+      "user_trial": "confirmed usable; subsequently confirmed longer shared colorbar",
+      "note": "These checks were performed on the functional candidate before changing only the application version to 1.1.2."
+    },
+    "colorbar_preview": {
+      "result": "passed",
+      "display_size": [
+        64,
+        320
+      ],
+      "window_sizes_checked": [
+        [
+          800,
+          600
+        ],
+        [
+          1100,
+          760
+        ],
+        [
+          1500,
+          940
+        ]
+      ],
+      "scope": "Native Qt source application with real data, before final version-label change."
+    },
+    "automated_frozen_exe_exports": {
+      "result": "not_completed",
+      "note": "Source residual/export pixel tests do not substitute for packaged executable export acceptance."
+    }
+  }
+}

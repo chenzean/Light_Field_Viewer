@@ -34,7 +34,7 @@
 
 无需安装 Python 环境，从 [V1.1.2 Release](https://github.com/chenzean/Light_Field_Viewer/releases/tag/v1.1.2) 下载 `LightFieldViewer.exe`，双击即可使用。
 
-Release 同时提供 `SHA256SUMS.txt` 与 `build-verification.json`，用于核对文件完整性和查看验证范围。旧版 V1.1.1 不包含本次优化。
+文件校验值见 [SHA256SUMS.txt](docs/releases/v1.1.2/SHA256SUMS.txt)，构建与验证范围见 [build-verification.json](docs/releases/v1.1.2/build-verification.json)。旧版 V1.1.1 不包含本次优化。
 
 ### 方式二：Python 源码运行
 
@@ -77,7 +77,7 @@ python -m unittest discover -s tests -v
 
 2026-10-24 在 Windows / Python 3.10.19 下完成 64 项源码测试，覆盖数据完整性、配帧、导出追溯、图像坐标、界面对齐及残差预览/导出的逐像素一致性。另已复核三种窗口尺寸和深浅色界面。
 
-Windows EXE 使用 PyInstaller 6.21.0 构建，已检查从项目目录外启动及版本标题。发布前的功能候选版本已验证真实数据加载，并经用户试用确认可用及色标加长效果。EXE 的独立自动化导出验收未完成，源码测试结果不替代该项验证；详细范围见 Release 附带的 `build-verification.json`。
+Windows EXE 使用 PyInstaller 6.21.0 构建，已检查从项目目录外启动及版本标题。发布前的功能候选版本已验证真实数据加载，并经用户试用确认可用及色标加长效果。EXE 的独立自动化导出验收未完成，源码测试结果不替代该项验证；详细范围见 [build-verification.json](docs/releases/v1.1.2/build-verification.json)。
 
 ---
 

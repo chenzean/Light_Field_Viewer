@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from PyQt5.QtCore import Qt, QRect, QSettings, QCoreApplication, QEvent
+from PyQt5.QtCore import Qt, QSettings, QCoreApplication, QEvent
 from PyQt5.QtWidgets import QApplication
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +39,6 @@ FEATURED = ("Ground_Truth", "RIFE", "EPIT", "DistgSSR", "LFSloMo", "Proposed_v1"
 
 WINDOW = (1500, 940)
 FULL_WIDTH = 1200        # 全窗口截图在仓库里的宽度
-SIDEBAR = QRect(0, 46, 384, 894)
 
 
 def pick_data_root():
@@ -57,6 +56,7 @@ def settle(app, seconds=0.5):
         # 取消勾选方法后旧图块是 deleteLater() 删除的, processEvents 不处理
         # DeferredDelete, 不显式送一次的话旧图块会留在画面上和新布局重叠
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        time.sleep(0.01)
 
 
 def save(window, name, rect=None, width=None):
@@ -110,7 +110,7 @@ def main():
         print("画布展示:", ", ".join(featured))
         settle(app)
     save(window, "overview", width=FULL_WIDTH)
-    save(window, "sidebar-data", SIDEBAR)
+    save(panel, "sidebar-data")
 
     # 一个矩形框 + 残差, 让「局部放大」页有内容可看
     panel.rect_added.emit()
@@ -122,8 +122,8 @@ def main():
     settle(app)
 
     panel.sections.setCurrentIndex(1)
-    app.processEvents()
-    save(window, "sidebar-annotate", SIDEBAR)
+    settle(app, 0.25)
+    save(panel, "sidebar-annotate")
 
     comparison.tabs.setCurrentIndex(1)
     settle(app, 3)
@@ -139,7 +139,7 @@ def main():
     panel.txt_export_dir.setText(r"D:\LF_export\Scene_0001")
     comparison.tabs.setCurrentIndex(0)
     settle(app)
-    save(window, "sidebar-export", SIDEBAR)
+    save(panel, "sidebar-export")
 
     panel.sections.setCurrentIndex(0)
     window.appearance.set_mode("dark")

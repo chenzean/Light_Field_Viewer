@@ -5,6 +5,26 @@ EPI (极平面图像) 提取模块
 import numpy as np
 
 
+def extract_epi(lf: np.ndarray, orientation: str, angular_idx: int,
+                spatial_pos: int) -> np.ndarray:
+    """按方向提取 EPI；角度索引从 1 开始，空间位置从 0 开始。"""
+    if lf.ndim != 5 or any(size == 0 for size in lf.shape):
+        raise ValueError("光场必须为非空 [U, V, H, W, C] 数组")
+    if orientation not in ('horizontal', 'vertical'):
+        raise ValueError(f"未知 EPI 方向: {orientation}")
+    if not isinstance(angular_idx, (int, np.integer)) or not isinstance(spatial_pos, (int, np.integer)):
+        raise ValueError("EPI 角度索引和空间位置必须为整数")
+    angular_size, spatial_size = ((lf.shape[0], lf.shape[2]) if orientation == 'horizontal'
+                                  else (lf.shape[1], lf.shape[3]))
+    if not 1 <= angular_idx <= angular_size:
+        raise ValueError(f"{orientation} EPI 角度索引须在 1–{angular_size}，当前为 {angular_idx}")
+    if not 0 <= spatial_pos < spatial_size:
+        raise ValueError(f"{orientation} EPI 空间位置须在 0–{spatial_size - 1}，当前为 {spatial_pos}")
+    if orientation == 'horizontal':
+        return horizontal_epi(lf, angular_idx - 1, spatial_pos)
+    return vertical_epi(lf, angular_idx - 1, spatial_pos)
+
+
 def horizontal_epi(lf: np.ndarray, angular_row: int, spatial_row: int) -> np.ndarray:
     """提取水平 EPI。
 
@@ -49,10 +69,15 @@ def crop_epi(epi: np.ndarray, start_col: int, end_col: int) -> np.ndarray:
 
     返回:
         裁剪后的 EPI
+
+    起点包含、终点不包含；无效范围抛出 ValueError，不隐式改变采样区域。
     """
     w = epi.shape[1]
-    start_col = max(0, min(start_col, w - 1))
-    end_col = max(start_col + 1, min(end_col, w))
+    if (not isinstance(start_col, (int, np.integer))
+            or not isinstance(end_col, (int, np.integer))
+            or not 0 <= start_col < end_col <= w):
+        raise ValueError(f"EPI 裁剪范围须为整数且满足 0 ≤ 起始 < 结束 ≤ {w}，"
+                         f"当前为 [{start_col}, {end_col})")
     return epi[:, start_col:end_col, :].copy()
 
 

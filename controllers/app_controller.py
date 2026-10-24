@@ -15,7 +15,7 @@ from models.rect_annotator import (
     draw_multiple_rectangles, crop_with_border
 )
 from models.epi_extractor import (
-    horizontal_epi, vertical_epi, crop_epi, draw_epi_region
+    extract_epi, crop_epi, draw_epi_region
 )
 from models.residual import (
     compute_residual, residual_to_colormap, generate_colorbar
@@ -68,6 +68,8 @@ class AppController:
         self._sai_cache = {}
         # MLI 缓存: {(method, scene): np.ndarray}
         self._mli_cache = {}
+        self._data_issues = {}
+        self._dataset_issue = ""
 
         # 延迟刷新定时器 (防抖: 参数快速变化时只刷新最后一次)
         self._refresh_timer = QTimer()
@@ -95,7 +97,8 @@ class AppController:
         s.rect_params_changed.connect(self.on_rect_params_changed)
         s.epi_params_changed.connect(self.on_epi_params_changed)
         s.residual_changed.connect(self.on_residual_changed)
-        s.refresh_requested.connect(self.refresh_all)
+        s.refresh_requested.connect(self.reload_data)
+        s.frame_alignment_changed.connect(self.on_frame_alignment_changed)
 
         self.comparison.rect_drawn_on_sai.connect(self.on_rect_drawn_on_sai)
         # 切换 tab 时触发刷新, 避免懒加载导致切换后看到旧数据
@@ -146,6 +149,8 @@ class AppController:
     # ==== 数据目录 ====
     def on_data_root_changed(self, path):
         self.data_root = path
+        self.settings.txt_data_root.setText(path)
+        self._dataset_issue = ""
         # 缓存 key 不含根目录, 换目录后必须清空, 否则同名 method/scene 会命中旧数据
         self._sai_cache.clear()
         self._mli_cache.clear()
@@ -153,17 +158,19 @@ class AppController:
         self._lf_cache_keys.clear()
         self.window.statusBar().showMessage(f"正在扫描: {path} ...")
 
-        self.lf_data.scan_root(path)
-        methods = self.lf_data.get_methods()
-
-        # 根据可视化模式选择场景列表
-        self.vis_mode = self.settings.get_vis_mode()
-        if self.vis_mode == 'mli':
-            scenes = self.lf_data.get_mli_scenes(self.mode)
-        else:
-            scenes = self.lf_data.get_scenes()
-
-        u_max, v_max = self.lf_data.detect_angular_resolution()
+        try:
+            self.lf_data.scan_root(path)
+            methods = self.lf_data.get_methods()
+            self.vis_mode = self.settings.get_vis_mode()
+            scenes = (self.lf_data.get_mli_scenes(self.mode) if self.vis_mode == 'mli'
+                      else self.lf_data.get_scenes())
+            u_max, v_max = self.lf_data.detect_angular_resolution()
+        except (OSError, ValueError) as error:
+            self._dataset_issue = f"无法读取数据目录：{error}"
+            methods, scenes = [], []
+            u_max, v_max = self.u_max, self.v_max
+        if not methods or not scenes:
+            self._dataset_issue = self._dataset_issue or "当前目录没有可用场景，请选择包含各方法文件夹的根目录，并核对 SAI / MLI 与图像 / 视频模式。"
         self.u_max, self.v_max = u_max, v_max
 
         # Ground_Truth 排第一
@@ -174,6 +181,7 @@ class AppController:
         self.settings.set_methods(methods)
         self.settings.set_scenes(scenes)
         self.settings.set_angular_resolution(u_max, v_max)
+        self.current_u, self.current_v = self.settings.get_uv()
         self.selected_methods = methods.copy()
 
         if scenes:
@@ -182,10 +190,49 @@ class AppController:
                 self._update_mli_frame_list()
             else:
                 self._update_frame_list()
+        else:
+            self.current_scene = ""
+            self.current_frame_index = 0
+            self.settings.set_frames([])
+            self.comparison.set_methods([])
+
+        self.window.set_data_available(bool(methods and scenes))
+        self._data_issues.clear()
+        self.window.show_data_issues([self._dataset_issue] if self._dataset_issue else [])
 
         self.window.statusBar().showMessage(
             f"已加载: {len(methods)} 个方法, {len(scenes)} 个场景, "
             f"角度分辨率 {u_max}×{v_max}")
+        self.refresh_all()
+
+    def reload_data(self):
+        """F5 rescans the directory and invalidates decoded images, preserving selection."""
+        if not self.data_root:
+            return
+        scene = self.current_scene
+        frame_name = self.settings.combo_frame.currentText()
+        methods = set(self.selected_methods)
+        self.on_data_root_changed(self.data_root)
+        scene_index = self.settings.combo_scene.findText(scene)
+        if scene_index >= 0:
+            self.settings.combo_scene.setCurrentIndex(scene_index)
+        frame_index = self.settings.combo_frame.findText(frame_name)
+        if frame_index >= 0:
+            self.settings.combo_frame.setCurrentIndex(frame_index)
+        self.settings.set_selected_methods(methods)
+        self.on_methods_changed(self.settings.get_selected_methods())
+
+    def on_frame_alignment_changed(self, alignment):
+        self.lf_data.set_frame_alignment(alignment)
+        self._sai_cache.clear()
+        self._mli_cache.clear()
+        self._lf_cache.clear()
+        self._lf_cache_keys.clear()
+        if self.current_scene:
+            if self.vis_mode == 'mli':
+                self._update_mli_frame_list()
+            else:
+                self._update_frame_list()
         self.refresh_all()
 
     def _update_frame_list(self):
@@ -203,14 +250,8 @@ class AppController:
             self.settings.set_frames(["(无帧)"])
             self.current_frame_index = 0
         else:
-            # 找到有数据的第一个方法来获取帧列表
-            for m in self.selected_methods:
-                frames = self.lf_data.get_mli_frame_list(m, self.current_scene)
-                if frames:
-                    self.settings.set_frames(frames)
-                    self.current_frame_index = 0
-                    return
-            self.settings.set_frames([])
+            self.settings.set_frames(
+                self.lf_data.get_mli_frame_display_list(self.current_scene))
             self.current_frame_index = 0
 
     def on_export_dir_changed(self, path):
@@ -302,7 +343,11 @@ class AppController:
 
     def _do_refresh(self):
         """实际执行刷新。"""
+        self._data_issues.clear()
         if not self.selected_methods or not self.current_scene:
+            self.comparison.set_methods([])
+            self.window.show_data_issues([self._dataset_issue] if self._dataset_issue else [])
+            self.window.set_data_available(False)
             return
 
         self.comparison.set_methods(self.selected_methods)
@@ -316,6 +361,14 @@ class AppController:
             self._do_refresh_mli()
         else:
             self._do_refresh_sai()
+        self.window.set_data_available(True)
+        notices = list(self._data_issues.values())
+        if self.lf_data.frame_alignment == 'index' and self.mode == 'video':
+            notices.insert(0, "按位置配帧：不同方法的实际帧名可能不同，请核对输入；导出清单会记录实际文件。")
+        self.window.show_data_issues(notices)
+
+    def _record_issue(self, method, message):
+        self._data_issues[method] = f"{method}：{message}"
 
     def _current_tab_index(self):
         """获取当前可见的标签页索引。"""
@@ -334,6 +387,7 @@ class AppController:
             for method in self.selected_methods:
                 sai = self._load_sai(method)
                 if sai is None:
+                    self.comparison.update_method_sai(method, None)
                     continue
                 annotated = draw_multiple_rectangles(sai, self.rects) if self.rects else sai.copy()
                 if self.epi_params.get('enabled', False):
@@ -368,6 +422,7 @@ class AppController:
             for method in self.selected_methods:
                 mli = self._load_mli(method)
                 if mli is None:
+                    self.comparison.update_method_sai(method, None)
                     continue
                 annotated = draw_multiple_rectangles(mli, self.rects) if self.rects else mli.copy()
                 self.comparison.update_method_sai(method, ndarray_to_qpixmap(annotated))
@@ -385,6 +440,8 @@ class AppController:
         gt_img = None
         if self.residual_enabled and 'Ground_Truth' in self.selected_methods:
             gt_img = loader('Ground_Truth')
+        if self.residual_enabled and gt_img is None:
+            self._record_issue('残差', "请选择可读取的 Ground_Truth；当前未计算残差")
 
         # 与导出一致: 使用所有方法全图残差的最大值作为统一色标。
         raw_residuals = {}
@@ -397,14 +454,22 @@ class AppController:
             crops = []
             if self.residual_enabled and method != 'Ground_Truth' \
                     and gt_img is not None and self.rects:
-                res_full = compute_residual(img, gt_img)
-                raw_residuals[method] = res_full
-                global_vmax = max(global_vmax, float(res_full.max()))
-            for r in self.rects:
+                try:
+                    res_full = compute_residual(img, gt_img)
+                except ValueError as error:
+                    self._record_issue(method, str(error))
+                else:
+                    raw_residuals[method] = res_full
+                    global_vmax = max(global_vmax, float(res_full.max()))
+            for index, r in enumerate(self.rects, 1):
                 crop = crop_with_border(
                     img, r['x'], r['y'], r['w'], r['h'],
                     r['color'], r['thickness'])
-                crops.append(ndarray_to_qpixmap(crop))
+                if crop.size == 0:
+                    self._record_issue(method, f"选区 {index} 与图像没有交集，请调整位置和大小")
+                    crops.append(None)
+                else:
+                    crops.append(ndarray_to_qpixmap(crop))
 
             crop_data[method] = crops
 
@@ -418,13 +483,14 @@ class AppController:
                     res_crop = crop_with_border(
                         res_colored, r['x'], r['y'], r['w'], r['h'],
                         r['color'], r['thickness'])
-                    res_maps.append(ndarray_to_qpixmap(res_crop))
+                    res_maps.append(ndarray_to_qpixmap(res_crop) if res_crop.size else None)
                 residual_data[method] = res_maps
 
-            cb_arr = generate_colorbar(global_vmax)
+            # A 120×600 source fits the 64×320 display without stretching ticks.
+            cb_arr = generate_colorbar(global_vmax, height=600)
             colorbar_pixmap = ndarray_to_qpixmap(cb_arr)
 
-        has_residual = bool(residual_data)
+        has_residual = self.residual_enabled and bool(self.rects)
         self.comparison.update_all_zooms(
             self.selected_methods, self.rects, crop_data,
             residual_data if has_residual else None,
@@ -435,9 +501,15 @@ class AppController:
                self.current_u, self.current_v)
         if key in self._sai_cache:
             return self._sai_cache[key]
-        sai = self.lf_data.load_sai(
-            method, self.current_scene, self.current_frame_index,
-            self.current_u, self.current_v)
+        try:
+            sai = self.lf_data.load_sai(
+                method, self.current_scene, self.current_frame_index,
+                self.current_u, self.current_v)
+        except (OSError, ValueError) as error:
+            self._record_issue(method, str(error))
+            return None
+        if sai is None:
+            self._record_issue(method, "缺少当前帧或视角")
         if sai is not None:
             sai = ensure_rgb(sai)
             self._sai_cache[key] = sai
@@ -451,8 +523,14 @@ class AppController:
         key = (method, self.current_scene, self.current_frame_index, self.mode)
         if key in self._mli_cache:
             return self._mli_cache[key]
-        mli = self.lf_data.load_mli(
-            method, self.current_scene, self.current_frame_index, self.mode)
+        try:
+            mli = self.lf_data.load_mli(
+                method, self.current_scene, self.current_frame_index, self.mode)
+        except (OSError, ValueError) as error:
+            self._record_issue(method, str(error))
+            return None
+        if mli is None:
+            self._record_issue(method, "缺少当前帧")
         if mli is not None:
             mli = ensure_rgb(mli)
             self._mli_cache[key] = mli
@@ -462,24 +540,19 @@ class AppController:
         return mli
 
     def _extract_epi_pixmap(self, method):
-        lf = self._get_light_field(method)
-        if lf is None:
+        try:
+            lf = self._get_light_field(method)
+            if lf is None:
+                self._record_issue(method, "缺少当前帧，无法提取 EPI")
+                return None
+            epi = extract_epi(lf, self.epi_params['orientation'],
+                              self.epi_params['angular_idx'],
+                              self.epi_params['spatial_pos'])
+            epi_cropped = crop_epi(epi, self.epi_params['crop_start'],
+                                   self.epi_params['crop_end'])
+        except (OSError, ValueError) as error:
+            self._record_issue(method, str(error))
             return None
-        orient = self.epi_params['orientation']
-        ang_idx = self.epi_params['angular_idx'] - 1
-        spatial_pos = self.epi_params['spatial_pos']
-        ang_idx = max(0, min(ang_idx, lf.shape[0] - 1))
-
-        if orient == 'horizontal':
-            spatial_pos = max(0, min(spatial_pos, lf.shape[2] - 1))
-            epi = horizontal_epi(lf, ang_idx, spatial_pos)
-        else:
-            spatial_pos = max(0, min(spatial_pos, lf.shape[3] - 1))
-            epi = vertical_epi(lf, ang_idx, spatial_pos)
-
-        epi_cropped = crop_epi(epi,
-                               self.epi_params['crop_start'],
-                               self.epi_params['crop_end'])
         stretch = self.epi_params.get('stretch', 1)
         if stretch > 1:
             epi_cropped = scale_epi(epi_cropped, stretch)
@@ -502,6 +575,9 @@ class AppController:
 
     # ==== 导出参数 ====
     def get_export_params(self):
+        # A click can arrive while the debounced preview is still pending.
+        self.epi_params = self.settings.get_epi_params()
+        self.residual_enabled = self.settings.get_residual_enabled()
         return {
             'data_root': self.data_root,
             'export_dir': self.export_dir,
@@ -511,6 +587,8 @@ class AppController:
             'angular_v': self.v_max,
             'scene': self.current_scene,
             'frame_index': self.current_frame_index,
+            'frame_name': self.settings.combo_frame.currentText(),
+            'frame_alignment': self.lf_data.frame_alignment,
             'u': self.current_u,
             'v': self.current_v,
             'methods': self.selected_methods.copy(),

@@ -5,7 +5,7 @@ Tab 1 — SAI 全图网格: 支持同步缩放 + 鼠标拖拽平移 + 右键画�
 Tab 2 — 局部放大对比: 每个矩形框的裁剪区域, 所有方法并排
 Tab 3 — EPI 对比: 所有方法的 EPI 并排
 
-图块统一由 ImagePlate 绘制: 圆角、发丝描边、随外观切换的底色。
+图块使用完整矩形显示，所有交互均使用原图像素坐标。
 """
 
 from PyQt5.QtWidgets import (
@@ -17,7 +17,7 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QCursor
 
 from views import theme
 
-PLATE_RADIUS = 8
+PLATE_RADIUS = 0
 GRID_SPACING = 10
 
 
@@ -25,13 +25,14 @@ GRID_SPACING = 10
 # 图块基类 — 圆角裁切 + 发丝描边
 # ===========================================================================
 class ImagePlate(QLabel):
-    """A rounded image tile. Qt cannot clip a QLabel pixmap, so it paints itself."""
+    """Neutral image bed; image corners remain visible for pixel inspection."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
+        self.setWordWrap(True)
         self._edge = None        # 覆盖色 (矩形框配色), None 时用主题描边
-        self._edge_width = 1.0
+        self._edge_width = 0.0
 
     def set_edge(self, color, width=1.4):
         self._edge = QColor(*color) if color is not None else None
@@ -39,6 +40,9 @@ class ImagePlate(QLabel):
         self.update()
 
     def paintEvent(self, event):
+        if self.pixmap() is None or self.pixmap().isNull():
+            super().paintEvent(event)
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -121,49 +125,81 @@ class SAILabel(ImagePlate):
         self._drawing = False
         self._draw_start = None
         self._rubber_band = None
+        self._smooth = True
 
     def set_original_pixmap(self, pixmap):
-        self._original_pixmap = pixmap
+        self._original_pixmap = pixmap if pixmap and not pixmap.isNull() else None
+        self.clear()
+        self._dragging = self._drawing = False
+        if self._rubber_band:
+            self._rubber_band.hide()
+        if self._original_pixmap is None:
+            self._vw = self._vh = 0
+            self.setText("缺少当前帧 / 视角")
+        else:
+            self.setPixmap(self._original_pixmap)
+        self.update()
+
+    def sizeHint(self):
+        # The retained full-resolution pixmap must not size the window.
+        return QSize(240, 180)
+
+    def minimumSizeHint(self):
+        return QSize(80, 80)
 
     def apply_viewport(self, vx, vy, vw, vh, smooth=True):
-        """显示原图中 (vx, vy, vw, vh) 区域, 填满整个 Label。
+        """Draw a floating-point source rectangle with one uniform scale.
 
-        smooth=False 时用快速插值 (拖拽/缩放过程中, 避免卡顿),
-        smooth=True 时用高质量平滑插值 (交互停止后的最终呈现)。
+        Keeping the source rectangle unrounded avoids pixel-aspect drift at
+        high zoom and gives painting, wheel, pan and ROI the same transform.
         """
-        self._vx, self._vy, self._vw, self._vh = vx, vy, vw, vh
-        if self._original_pixmap is None or self._original_pixmap.isNull():
+        if self._original_pixmap is None:
             return
         ow, oh = self._original_pixmap.width(), self._original_pixmap.height()
-        vx = max(0, min(vx, ow - 1))
-        vy = max(0, min(vy, oh - 1))
-        vw = max(1, min(vw, ow - vx))
-        vh = max(1, min(vh, oh - vy))
-        mode = Qt.SmoothTransformation if smooth else Qt.FastTransformation
-        cropped = self._original_pixmap.copy(vx, vy, vw, vh)
-        super().setPixmap(cropped.scaled(
-            self.size(), Qt.IgnoreAspectRatio, mode))
+        self._vw, self._vh = max(1e-6, min(vw, ow)), max(1e-6, min(vh, oh))
+        self._vx = max(0.0, min(vx, ow - self._vw))
+        self._vy = max(0.0, min(vy, oh - self._vh))
+        self._smooth = smooth
+        self.update()
 
     def show_full(self, smooth=True):
-        if self._original_pixmap and not self._original_pixmap.isNull():
-            self._vx, self._vy = 0, 0
-            self._vw = self._original_pixmap.width()
-            self._vh = self._original_pixmap.height()
-            mode = Qt.SmoothTransformation if smooth else Qt.FastTransformation
-            super().setPixmap(self._original_pixmap.scaled(
-                self.size(), Qt.IgnoreAspectRatio, mode))
+        if self._original_pixmap:
+            self.apply_viewport(0, 0, self._original_pixmap.width(),
+                                self._original_pixmap.height(), smooth=smooth)
+
+    def display_rect(self):
+        """Image bounds in widget coordinates, excluding the letterbox."""
+        if self._original_pixmap is None or self._vw <= 0 or self._vh <= 0:
+            return QRectF()
+        scale = min(self.width() / self._vw, self.height() / self._vh)
+        width, height = self._vw * scale, self._vh * scale
+        return QRectF((self.width() - width) / 2, (self.height() - height) / 2,
+                      width, height)
+
+    def paintEvent(self, event):
+        if self._original_pixmap is None or self._vw <= 0:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), theme.color("image_bed"))
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, self._smooth)
+        painter.drawPixmap(self.display_rect(), self._original_pixmap,
+                           QRectF(self._vx, self._vy, self._vw, self._vh))
 
     def wheelEvent(self, event):
         pos = event.pos()
-        w, h = self.width(), self.height()
-        rel_x = pos.x() / w if w > 0 else 0.5
-        rel_y = pos.y() / h if h > 0 else 0.5
-        self.wheel_signal.emit(event.angleDelta().y(), rel_x, rel_y)
+        rect = self.display_rect()
+        if not rect.isEmpty() and rect.contains(QPointF(pos)):
+            self.wheel_signal.emit(event.angleDelta().y(),
+                                   (pos.x() - rect.x()) / rect.width(),
+                                   (pos.y() - rect.y()) / rect.height())
         event.accept()
 
     # ---- 左键: 拖拽平移 ----
     def mousePressEvent(self, event):
         self.focus_request.emit()
+        if self._map_to_orig(event.pos()) is None:
+            return
         if event.button() == Qt.LeftButton:
             self._dragging = True
             self._drag_start = event.pos()
@@ -181,15 +217,15 @@ class SAILabel(ImagePlate):
             delta = event.pos() - self._drag_start
             self._drag_start = event.pos()
             # Label 像素 → 原图像素
-            pm = self.pixmap()
-            if pm and not pm.isNull() and pm.width() > 0:
-                scale = self._vw / pm.width() if self._vw > 0 else 1.0
-                dx = -delta.x() * scale
-                dy = -delta.y() * scale
+            rect = self.display_rect()
+            if not rect.isEmpty():
+                dx = -delta.x() * self._vw / rect.width()
+                dy = -delta.y() * self._vh / rect.height()
                 self.drag_delta.emit(dx, dy)
         elif self._drawing and self._rubber_band:
             self._rubber_band.setGeometry(
-                QRect(self._draw_start, event.pos()).normalized())
+                QRect(self._draw_start, event.pos()).normalized().intersected(
+                    self.display_rect().toAlignedRect()))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._dragging:
@@ -200,7 +236,7 @@ class SAILabel(ImagePlate):
             if self._rubber_band:
                 self._rubber_band.hide()
             s = self._map_to_orig(self._draw_start)
-            e = self._map_to_orig(event.pos())
+            e = self._map_to_orig(event.pos(), clamp=True)
             if s and e:
                 x = min(s[0], e[0])
                 y = min(s[1], e[1])
@@ -212,29 +248,21 @@ class SAILabel(ImagePlate):
     def mouseDoubleClickEvent(self, event):
         pass  # 面板处理
 
-    def _map_to_orig(self, label_pos):
+    def _map_to_orig(self, label_pos, clamp=False):
         """Label 坐标 → 原图坐标 (考虑当前 viewport)。"""
-        pm = self.pixmap()
-        if pm is None or pm.isNull():
+        rect = self.display_rect()
+        if rect.isEmpty():
             return None
-        pw, ph = pm.width(), pm.height()
-        lw, lh = self.width(), self.height()
-        x_off = (lw - pw) // 2
-        y_off = (lh - ph) // 2
-        rx = label_pos.x() - x_off
-        ry = label_pos.y() - y_off
-        if rx < 0 or ry < 0 or rx >= pw or ry >= ph:
+        if not clamp and not rect.contains(QPointF(label_pos)):
             return None
-        # viewport 内的比例
-        img_x = self._vx + int(rx * self._vw / pw)
-        img_y = self._vy + int(ry * self._vh / ph)
-        return (img_x, img_y)
+        rx = max(0.0, min(1.0, (label_pos.x() - rect.x()) / rect.width()))
+        ry = max(0.0, min(1.0, (label_pos.y() - rect.y()) / rect.height()))
+        return (int(self._vx + rx * self._vw), int(self._vy + ry * self._vh))
 
     def resizeEvent(self, event):
-        if self._original_pixmap and self._vw > 0:
-            self.apply_viewport(self._vx, self._vy, self._vw, self._vh)
-        elif self._original_pixmap:
+        if self._original_pixmap and self._vw <= 0:
             self.show_full()
+        self.update()
         super().resizeEvent(event)
 
 
@@ -248,13 +276,20 @@ class ImageLabel(ImagePlate):
         self.setMinimumSize(40, 40)
         self._pixmap = None
 
+    def sizeHint(self):
+        return QSize(180, 120)
+
+    def minimumSizeHint(self):
+        return QSize(40, 40)
+
     def set_image(self, pixmap):
         self._pixmap = pixmap
-        if pixmap:
+        if pixmap and not pixmap.isNull():
             super().setPixmap(pixmap.scaled(
                 self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
-            super().setPixmap(QPixmap())
+            self.clear()
+            self.setText("缺少当前帧 / 视角")
 
     def resizeEvent(self, event):
         if self._pixmap and not self._pixmap.isNull():
@@ -263,9 +298,25 @@ class ImageLabel(ImagePlate):
         super().resizeEvent(event)
 
 
+class _ElidedLabel(QLabel):
+    """Keep method names within their column, with the full name on hover."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+        self.setToolTip(text)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def resizeEvent(self, event):
+        self.setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.ElideMiddle, self.contentsRect().width()))
+        super().resizeEvent(event)
+
+
 def _method_caption(text):
     """The small semibold name that sits above every tile."""
-    label = QLabel(text)
+    label = _ElidedLabel(text)
     label.setAlignment(Qt.AlignCenter)
     label.setProperty("typography", "method")
     label.setMinimumHeight(22)
@@ -295,7 +346,9 @@ class SAIGridTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.labels = {}          # {method: SAILabel}
+        self._pixmaps = {}
         self._method_order = []
+        self._reference_method = None
         self._zoom = 1.0
         self._pan_x = 0.0
         self._pan_y = 0.0
@@ -345,6 +398,7 @@ class SAIGridTab(QWidget):
                 lbl = self.labels.pop(name)
                 self.grid.removeWidget(lbl)
                 lbl.deleteLater()
+                self._pixmaps.pop(name, None)
         # 添加新的
         for m in methods:
             if m not in self.labels:
@@ -366,8 +420,9 @@ class SAIGridTab(QWidget):
                 container._title = title
                 self.labels[m] = container
 
-        self._method_order = methods
+        self._method_order = list(methods)
         self._relayout()
+        self._sync_reference_geometry()
 
     def _relayout(self):
         while self.grid.count():
@@ -389,9 +444,10 @@ class SAIGridTab(QWidget):
             cell_h = panel_height / rows
             if cell_w < self.COLUMN_MIN_WIDTH:
                 continue
-            aspect = min(cell_w, cell_h) / max(cell_w, cell_h) if max(cell_w, cell_h) > 0 else 0
-            area = cell_w * cell_h
-            score = area * aspect
+            available_w = max(1, cell_w - GRID_SPACING)
+            available_h = max(1, cell_h - 30 - GRID_SPACING)
+            scale = min(available_w / self._img_w, available_h / self._img_h)
+            score = scale * scale
             if score > best_score:
                 best_score = score
                 best_cols = c
@@ -417,17 +473,50 @@ class SAIGridTab(QWidget):
         super().resizeEvent(event)
         if self._method_order:
             self._relayout()
+            QTimer.singleShot(0, self._apply_viewport_all)
 
     def set_sai(self, method, pixmap):
         if method in self.labels:
-            sai_lbl = self.labels[method]._sai_label
-            sai_lbl.set_original_pixmap(pixmap)
-            if pixmap and not pixmap.isNull():
-                self._img_w = pixmap.width()
-                self._img_h = pixmap.height()
-            self._apply_viewport_one(method)
+            self._pixmaps[method] = pixmap if pixmap and not pixmap.isNull() else None
+            self._sync_reference_geometry()
+
+    def _sync_reference_geometry(self):
+        """Share pixel coordinates only between images of the same size.
+
+        Ground Truth anchors the grid when available; otherwise the first
+        loaded method in display order does. Incompatible images are blocked,
+        never stretched or silently mapped into another method's coordinates.
+        """
+        valid = [m for m in self._method_order if self._pixmaps.get(m)]
+        reference = 'Ground_Truth' if 'Ground_Truth' in valid else (valid[0] if valid else None)
+        self._reference_method = reference
+        if reference is not None:
+            pixmap = self._pixmaps[reference]
+            size = (pixmap.width(), pixmap.height())
+            if size != (self._img_w, self._img_h):
+                self._img_w, self._img_h = size
+                self._zoom = 1.0
+                self._pan_x = self._pan_y = 0.0
+                self._relayout()
+        for method in self._method_order:
+            label = self.labels[method]._sai_label
+            pixmap = self._pixmaps.get(method)
+            if pixmap and (pixmap.width(), pixmap.height()) != (self._img_w, self._img_h):
+                label.set_original_pixmap(None)
+                label.setText(f"尺寸不一致 · 无法同步比较\n{pixmap.width()}×{pixmap.height()}，参考 {self._img_w}×{self._img_h}")
+            else:
+                label.set_original_pixmap(pixmap)
+        self._apply_viewport_all()
+        QTimer.singleShot(0, self._apply_viewport_all)
+
+    def reset_view(self):
+        self._zoom = 1.0
+        self._pan_x = self._pan_y = 0.0
+        self._apply_viewport_all()
 
     def _on_wheel(self, delta, rel_x, rel_y):
+        if delta == 0:
+            return
         self._begin_interaction()
         old_zoom = self._zoom
         if delta > 0:
@@ -470,7 +559,9 @@ class SAIGridTab(QWidget):
         elif event.key() == Qt.Key_Down:
             self._pan_y += step; moved = True
         elif event.key() == Qt.Key_Home:
-            self._zoom = 1.0; self._pan_x = 0; self._pan_y = 0; moved = True
+            self.reset_view()
+            event.accept()
+            return
         if moved:
             self._begin_interaction()
             self._apply_viewport_all()
@@ -479,12 +570,13 @@ class SAIGridTab(QWidget):
             super().keyPressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        self._zoom = 1.0
-        self._pan_x = 0
-        self._pan_y = 0
-        self._apply_viewport_all()
+        self.reset_view()
 
     def _apply_viewport_all(self):
+        vw = self._img_w / max(1.0, self._zoom)
+        vh = self._img_h / max(1.0, self._zoom)
+        self._pan_x = max(0.0, min(self._pan_x, self._img_w - vw))
+        self._pan_y = max(0.0, min(self._pan_y, self._img_h - vh))
         for m in self._method_order:
             self._apply_viewport_one(m)
 
@@ -493,17 +585,10 @@ class SAIGridTab(QWidget):
             return
         sai_lbl = self.labels[method]._sai_label
         smooth = not self._fast_mode
-        if self._zoom <= 1.0:
-            sai_lbl.show_full(smooth=smooth)
-        else:
-            vw = self._img_w / self._zoom
-            vh = self._img_h / self._zoom
-            max_px = max(0, self._img_w - vw)
-            max_py = max(0, self._img_h - vh)
-            self._pan_x = max(0, min(self._pan_x, max_px))
-            self._pan_y = max(0, min(self._pan_y, max_py))
-            sai_lbl.apply_viewport(
-                int(self._pan_x), int(self._pan_y), int(vw), int(vh), smooth=smooth)
+        sai_lbl.apply_viewport(self._pan_x, self._pan_y,
+                               self._img_w / max(1.0, self._zoom),
+                               self._img_h / max(1.0, self._zoom),
+                               smooth=smooth)
 
 
 # ===========================================================================
@@ -512,7 +597,7 @@ class SAIGridTab(QWidget):
 class ZoomCompareTab(QWidget):
     """局部放大对比 — 每个矩形框一组, 所有方法自适应网格排列。"""
 
-    COLUMN_MIN_WIDTH = 150
+    COLUMN_MIN_WIDTH = 180
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -568,19 +653,21 @@ class ZoomCompareTab(QWidget):
         panel_height = self.scroll.viewport().height()
         num_rects = len(self._rects)
         has_residual = self._residual_data is not None
-        rows_per_rect = 2 if has_residual else 1
-        group_height = max(200, panel_height // max(1, num_rects * rows_per_rect) - 30)
+        if has_residual:
+            panel_width -= 74
+        image_rows = 2 if has_residual else 1
+        group_height = max(250, panel_height // max(1, num_rects) - 32)
+        aspect = self._rects[0]['w'] / max(1, self._rects[0]['h']) if self._rects else 1
 
         best_cols = 1
         best_score = 0
         for c in range(1, n + 1):
             rows = (n + c - 1) // c
-            cell_w = panel_width / c
-            cell_h = group_height / rows
+            cell_w = panel_width / c - GRID_SPACING
+            cell_h = (group_height / rows - 50) / image_rows
             if cell_w < self.COLUMN_MIN_WIDTH:
                 continue
-            aspect = min(cell_w, cell_h) / max(cell_w, cell_h) if max(cell_w, cell_h) > 0 else 0
-            score = cell_w * cell_h * aspect
+            score = min(cell_w / aspect, max(1, cell_h)) ** 2
             if score > best_score:
                 best_score = score
                 best_cols = c
@@ -597,24 +684,44 @@ class ZoomCompareTab(QWidget):
         self._rebuild()
 
     def _tile_grid(self, methods, best_cols, color, source, rect_index):
-        """一组方法的裁剪图网格。"""
+        """Each method keeps its crop and residual in the same grid cell."""
         holder = QWidget()
         grid = QGridLayout(holder)
         grid.setSpacing(GRID_SPACING)
         grid.setContentsMargins(0, 0, 0, 0)
         for j, m in enumerate(methods):
             cell = QWidget()
+            cell.setObjectName("methodComparison")
+            cell.setProperty("method", m)
             vbox = QVBoxLayout(cell)
             vbox.setSpacing(4)
             vbox.setContentsMargins(0, 0, 0, 0)
             vbox.addWidget(_method_caption(m))
             img_lbl = ImageLabel()
-            img_lbl.set_edge(color, 1.6)
+            img_lbl.setObjectName("cropImage")
+            img_lbl.setMinimumHeight(96)
             img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            vbox.addWidget(img_lbl)
+            vbox.addWidget(img_lbl, 1)
             grid.addWidget(cell, j // best_cols, j % best_cols)
-            if source and m in source and rect_index < len(source[m]):
-                img_lbl.set_image(source[m][rect_index])
+            pixmap = source[m][rect_index] if source and m in source and rect_index < len(source[m]) else None
+            img_lbl.set_image(pixmap)
+            if self._residual_data is not None:
+                residual_caption = QLabel("参考图" if m == 'Ground_Truth' else "绝对残差 · RGB 均值")
+                residual_caption.setProperty("typography", "caption")
+                residual_caption.setAlignment(Qt.AlignCenter)
+                vbox.addWidget(residual_caption)
+                residual = ImageLabel()
+                residual.setObjectName("residualImage")
+                residual.setMinimumHeight(96)
+                residual.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                if m == 'Ground_Truth':
+                    residual.setText("Ground Truth\n作为残差计算参考")
+                else:
+                    values = self._residual_data.get(m, [])
+                    residual.set_image(values[rect_index] if rect_index < len(values) else None)
+                    if residual._pixmap is None:
+                        residual.setText("无可用残差")
+                vbox.addWidget(residual, 1)
         for c in range(best_cols):
             grid.setColumnStretch(c, 1)
         for r_idx in range((len(methods) + best_cols - 1) // best_cols):
@@ -655,39 +762,34 @@ class ZoomCompareTab(QWidget):
             self.main_layout.addWidget(title)
             group_widgets.append(title)
 
-            # 裁剪图网格
+            # The color scale occupies its own column; method columns never shift.
+            group_row = QWidget()
+            row_layout = QHBoxLayout(group_row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(GRID_SPACING)
             grid_w = self._tile_grid(methods, best_cols, color, crop_data, i)
-            self.main_layout.addWidget(grid_w, 1)
-            group_widgets.append(grid_w)
-
-            # 残差图网格 (如果启用)
+            row_layout.addWidget(grid_w, 1)
             if has_residual:
-                res_title = _group_caption(color, f"残差图 (矩形框 {i+1})")
-                self.main_layout.addWidget(res_title)
-                group_widgets.append(res_title)
-
-                # 残差网格 + 颜色条 水平排列
-                res_row_w = QWidget()
-                res_row_layout = QHBoxLayout(res_row_w)
-                res_row_layout.setSpacing(GRID_SPACING)
-                res_row_layout.setContentsMargins(0, 0, 0, 0)
-
-                res_methods = [m for m in methods if m != 'Ground_Truth']
-                res_row_layout.addWidget(
-                    self._tile_grid(res_methods, best_cols, color,
-                                    residual_data, i), 1)
-
-                # 右侧: 颜色条
+                scale_column = QWidget()
+                scale_column.setFixedWidth(64)
+                scale_layout = QVBoxLayout(scale_column)
+                scale_layout.setContentsMargins(0, 0, 0, 0)
+                scale_title = QLabel("残差\n共享色标")
+                scale_title.setAlignment(Qt.AlignCenter)
+                scale_title.setProperty("typography", "caption")
+                scale_layout.addWidget(scale_title)
                 if self._colorbar_pixmap and not self._colorbar_pixmap.isNull():
                     cb_lbl = ImageLabel()
-                    cb_lbl.setFixedWidth(56)
-                    cb_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+                    cb_lbl.setObjectName("residualColorbar")
+                    cb_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                    cb_lbl.setFixedSize(64, 320)
                     cb_lbl.set_edge(None, 0.0)
                     cb_lbl.set_image(self._colorbar_pixmap)
-                    res_row_layout.addWidget(cb_lbl)
-
-                self.main_layout.addWidget(res_row_w, 1)
-                group_widgets.append(res_row_w)
+                    scale_layout.addWidget(cb_lbl)
+                scale_layout.addStretch()
+                row_layout.addWidget(scale_column)
+            self.main_layout.addWidget(group_row, 1)
+            group_widgets.append(group_row)
 
             self._groups.append(group_widgets)
 
@@ -704,6 +806,13 @@ class EPICompareTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._methods = []
+        self._epi_data = {}
+        self._scale = None
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._refresh_fit)
         self._init_ui()
 
     def _init_ui(self):
@@ -722,7 +831,44 @@ class EPICompareTab(QWidget):
         self._rows = []  # [(label_widget, name_lbl, img_lbl)]
 
     def update_epis(self, methods, epi_data):
-        """更新 EPI 显示 — 竖向排列, 每个方法一行, 统一宽度。"""
+        """One common scale for every EPI, without stretching to fill a row."""
+        self._methods = list(methods)
+        self._epi_data = epi_data or {}
+        self._scale = self._fit_scale()
+        self._rebuild()
+        self._resize_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._methods:
+            # Recompute after the scroll viewport has its final size. Only
+            # parent resizes schedule this; rebuilding rows cannot loop it.
+            self._resize_timer.start()
+
+    def _refresh_fit(self):
+        scale = self._fit_scale()
+        if self._scale is None or abs(scale - self._scale) > 1e-9:
+            self._scale = scale
+            self._rebuild()
+        else:
+            # An all-missing EPI set has no image scale change on resize.
+            # Its placeholders must still shrink with the viewport.
+            width = max(40, min(240, self.scroll.viewport().width() - 146))
+            for method, (_, _, label) in zip(self._methods, self._rows):
+                pixmap = self._epi_data.get(method)
+                if not pixmap or pixmap.isNull():
+                    label.setFixedWidth(width)
+
+    def _fit_scale(self):
+        pixmaps = [p for p in self._epi_data.values() if p and not p.isNull()]
+        if not pixmaps:
+            return 1.0
+        max_width = max(p.width() for p in pixmaps)
+        max_height = max(p.height() for p in pixmaps)
+        return max(0.01, min(max(40, self.scroll.viewport().width() - 146) / max_width,
+                             self.EPI_DISPLAY_HEIGHT / max_height))
+
+    def _rebuild(self):
         # 清除旧内容 (含 addStretch 产生的 spacer)
         while self.vbox.count():
             item = self.vbox.takeAt(0)
@@ -731,18 +877,19 @@ class EPICompareTab(QWidget):
                 w.deleteLater()
         self._rows.clear()
 
-        if not methods or not epi_data:
+        if not self._methods:
             return
 
-        for m in methods:
+        for m in self._methods:
             row_w = QWidget()
             hbox = QHBoxLayout(row_w)
             hbox.setSpacing(10)
             hbox.setContentsMargins(0, 0, 0, 0)
 
             # 方法名 (固定宽度, 右对齐, 与图像基线对齐)
-            name_lbl = QLabel(m)
+            name_lbl = _ElidedLabel(m)
             name_lbl.setFixedWidth(118)
+            name_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             name_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             name_lbl.setProperty("typography", "method")
             hbox.addWidget(name_lbl)
@@ -750,17 +897,24 @@ class EPICompareTab(QWidget):
             # EPI 图像
             img_lbl = ImagePlate()
             img_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            img_lbl.setFixedHeight(self.EPI_DISPLAY_HEIGHT)
-            img_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            img_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-            pix = epi_data.get(m)
+            pix = self._epi_data.get(m)
             if pix and not pix.isNull():
-                # 统一缩放: 高度固定, 宽度按比例
-                scaled = pix.scaledToHeight(
-                    self.EPI_DISPLAY_HEIGHT, Qt.SmoothTransformation)
+                # A shared multiplier preserves slope relationships even if
+                # methods have different EPI heights; never scale each alone.
+                scaled = pix.scaled(max(1, round(pix.width() * self._scale)),
+                                    max(1, round(pix.height() * self._scale)),
+                                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 img_lbl.setPixmap(scaled)
+                img_lbl.setFixedSize(scaled.size())
+            else:
+                img_lbl.setText("缺少当前帧 / 视角的 EPI")
+                width = max(40, min(240, self.scroll.viewport().width() - 146))
+                img_lbl.setFixedSize(width, self.EPI_DISPLAY_HEIGHT)
 
             hbox.addWidget(img_lbl)
+            hbox.addStretch()
             self.vbox.addWidget(row_w)
             self._rows.append((row_w, name_lbl, img_lbl))
 
@@ -823,10 +977,10 @@ class ComparisonPanel(QWidget):
         self.empty_glyph.setAlignment(Qt.AlignCenter)
         self.empty_glyph.setFixedHeight(64)
 
-        empty_title = QLabel("开始探索光场")
+        empty_title = QLabel("打开光场数据")
         empty_title.setObjectName("emptyTitle")
         empty_title.setAlignment(Qt.AlignCenter)
-        empty_description = QLabel("打开数据目录，选择场景与方法，\n在同一画布中比较每一处细节。")
+        empty_description = QLabel("选择包含各方法结果的数据目录，\n然后选择场景、帧与视角进行同步比较。")
         empty_description.setObjectName("emptyDescription")
         empty_description.setAlignment(Qt.AlignCenter)
         open_button = QPushButton("打开数据目录…")

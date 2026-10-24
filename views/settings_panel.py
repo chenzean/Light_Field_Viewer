@@ -174,6 +174,7 @@ class SettingsPanel(QWidget):
     angular_resolution_changed = pyqtSignal(int, int)
     scene_changed = pyqtSignal(str)
     frame_changed = pyqtSignal(int)            # 帧位置索引 (0-based)
+    frame_alignment_changed = pyqtSignal(str)
     uv_changed = pyqtSignal(int, int)
     methods_changed = pyqtSignal(list)         # 选中的方法列表
     rect_added = pyqtSignal()
@@ -226,7 +227,7 @@ class SettingsPanel(QWidget):
         picker_layout.addStretch(1)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 12, 0, 0)
+        main_layout.setContentsMargins(0, 16, 0, 0)
         main_layout.setSpacing(10)
         main_layout.addWidget(picker)
         main_layout.addWidget(self.sections, 1)
@@ -265,6 +266,8 @@ class SettingsPanel(QWidget):
             _row("数据", [self.txt_data_root, browse_data], expand=True,
                  label_width=34),
         ])
+
+        self.txt_data_root.textChanged.connect(self.txt_data_root.setToolTip)
 
         # 可视化模式 / 数据类型 — 两个分段控件
         self.radio_sai = RadioButton("子孔径图像 (SAI)")
@@ -323,8 +326,18 @@ class SettingsPanel(QWidget):
             _separator(), _row("视角 u", self.spin_u),
             _separator(), _row("视角 v", self.spin_v))
 
+        self.combo_alignment = SelectionBox()
+        self.combo_alignment.addItem("按帧 ID", "name")
+        self.combo_alignment.addItem("按位置（兼容旧数据）", "index")
+        self.combo_alignment.setToolTip("默认匹配帧号；没有帧号时匹配名称。按位置模式需自行确认时间对应。")
+        self.combo_alignment.currentIndexChanged.connect(
+            lambda _: self.frame_alignment_changed.emit(self.combo_alignment.currentData()))
+        self.alignment_group = _stack(
+            _separator(), _row("配帧", self.combo_alignment, label_width=34))
+
         grp_sel = _card("数据选择", [scene_row])
         grp_sel.layout().addWidget(self.hbox_frame_widget)
+        grp_sel.layout().addWidget(self.alignment_group)
         grp_sel.layout().addWidget(self.widget_uv)
 
         # 方法选择
@@ -343,6 +356,13 @@ class SettingsPanel(QWidget):
 
         return [grp_dir, display_group, self.grp_angular, grp_sel, grp_methods]
 
+    def set_selected_methods(self, methods):
+        self.list_methods.blockSignals(True)
+        for index in range(self.list_methods.count()):
+            item = self.list_methods.item(index)
+            item.setCheckState(Qt.Checked if item.text() in methods else Qt.Unchecked)
+        self.list_methods.blockSignals(False)
+
     # ---- 「标注」页 ----
     def _annotation_groups(self):
         add_rect = PushButton("添加")
@@ -359,8 +379,8 @@ class SettingsPanel(QWidget):
 
         self.spin_rect_x = _stepper(0, 4096, cfg.DEFAULT_RECT_X, SMALL_STEPPER_WIDTH)
         self.spin_rect_y = _stepper(0, 4096, cfg.DEFAULT_RECT_Y, SMALL_STEPPER_WIDTH)
-        self.spin_rect_w = _stepper(0, 4096, cfg.DEFAULT_RECT_W, SMALL_STEPPER_WIDTH)
-        self.spin_rect_h = _stepper(0, 4096, cfg.DEFAULT_RECT_H, SMALL_STEPPER_WIDTH)
+        self.spin_rect_w = _stepper(1, 4096, cfg.DEFAULT_RECT_W, SMALL_STEPPER_WIDTH)
+        self.spin_rect_h = _stepper(1, 4096, cfg.DEFAULT_RECT_H, SMALL_STEPPER_WIDTH)
         self.spin_rect_thickness = _stepper(1, 20, cfg.DEFAULT_RECT_THICKNESS)
         # 颜色改用色板按钮 (QColorDialog), 三个分量仍作为取值来源保留
         self.spin_rect_r = _stepper(0, 255, 255)
@@ -426,12 +446,16 @@ class SettingsPanel(QWidget):
             ("裁剪结束", 'spin_epi_crop_end', cfg.DEFAULT_EPI_CROP_END, 4096),
             ("高度拉伸", 'spin_epi_stretch', cfg.DEFAULT_EPI_STRETCH, 20),
         ]:
-            spin = _stepper(1, maximum, default)
+            minimum = 0 if attr in ('spin_epi_spatial', 'spin_epi_crop_start') else 1
+            spin = _stepper(minimum, maximum, default)
             spin.valueChanged.connect(self._on_epi_changed)
             setattr(self, attr, spin)
             epi_rows.append(_row(caption, spin, label_width=LABEL_WIDTH))
         self.grp_epi = _card("EPI 设置", epi_rows)
 
+        self.spin_epi_spatial.setToolTip("空间像素索引从 0 开始")
+        self.spin_epi_crop_start.setToolTip("起始像素包含在选区内；索引从 0 开始")
+        self.spin_epi_crop_end.setToolTip("结束像素不包含在选区内")
         return [grp_rect, grp_residual, self.grp_epi]
 
     # ---- 「导出」页 ----
@@ -483,6 +507,9 @@ class SettingsPanel(QWidget):
         box.setSpacing(5)
         label = QLabel(caption)
         label.setProperty("typography", "caption")
+        # Latin X/Y and Chinese width/height captions share one column.
+        label.setFixedWidth(16)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         box.addWidget(label)
         box.addWidget(spin)
         return holder
@@ -511,6 +538,7 @@ class SettingsPanel(QWidget):
             return
         is_video = self.radio_video.isChecked()
         self.hbox_frame_widget.setVisible(is_video)
+        self.alignment_group.setVisible(is_video)
         mode = 'video' if is_video else 'image'
         self.mode_changed.emit(mode)
 
@@ -535,7 +563,7 @@ class SettingsPanel(QWidget):
         v_max = self.spin_v_max.value()
         self.spin_u.setMaximum(u_max)
         self.spin_v.setMaximum(v_max)
-        self.spin_epi_angular.setMaximum(max(u_max, v_max))
+        self.spin_epi_angular.setMaximum(u_max if self.radio_h_epi.isChecked() else v_max)
         self.angular_resolution_changed.emit(u_max, v_max)
 
     def _on_scene_changed(self, text):
@@ -603,6 +631,10 @@ class SettingsPanel(QWidget):
     def _on_epi_changed(self, *args):
         if self._building:
             return
+        self.spin_epi_angular.blockSignals(True)
+        self.spin_epi_angular.setMaximum(self.spin_u_max.value() if self.radio_h_epi.isChecked()
+                                         else self.spin_v_max.value())
+        self.spin_epi_angular.blockSignals(False)
         self.epi_params_changed.emit(self.get_epi_params())
 
     # ---- 外部接口 ----
@@ -641,7 +673,7 @@ class SettingsPanel(QWidget):
         self.spin_v_max.setValue(v_max)
         self.spin_u.setMaximum(u_max)
         self.spin_v.setMaximum(v_max)
-        self.spin_epi_angular.setMaximum(max(u_max, v_max))
+        self.spin_epi_angular.setMaximum(u_max if self.radio_h_epi.isChecked() else v_max)
         self._building = False
 
     def update_rect_list(self, rects: list):

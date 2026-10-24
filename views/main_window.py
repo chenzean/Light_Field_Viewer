@@ -1,8 +1,7 @@
 """
 主窗口 — 组装左侧设置面板和右侧对比面板
 
-窗口结构参照 macOS: 顶部统一工具栏, 左侧半透明侧栏, 右侧内容区,
-三者之间只用 1px 分隔线, 不做浮层卡片。
+左侧保留数据、标注和导出分组，右侧显示对比结果与数据问题。
 """
 
 from PyQt5.QtWidgets import (
@@ -23,6 +22,7 @@ from views.glass_background import GlassBackground
 from views.appearance import Appearance
 from views.controls import PushButton, SelectionBox
 from utils.resources import app_icon
+import config as cfg
 
 TOOLBAR_HEIGHT = 46
 
@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, settings=None):
         super().__init__()
-        self.setWindowTitle("Light Field Viewer V1 — 光场图像查看器")
+        self.setWindowTitle(f"Light Field Viewer {cfg.VERSION} — 光场图像查看器")
         self.setWindowIcon(app_icon())
         self.setMinimumSize(800, 600)
         theme.apply_interface_font(QApplication.instance())
@@ -53,10 +53,23 @@ class MainWindow(QMainWindow):
         self.settings_panel.setMinimumWidth(360)
         self.settings_panel.setMaximumWidth(460)
 
+        canvas_workspace = QWidget()
+        canvas_workspace.setObjectName("canvasWorkspace")
+        canvas_layout = QVBoxLayout(canvas_workspace)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(0)
+        self.data_notice = QLabel()
+        self.data_notice.setObjectName("dataNotice")
+        self.data_notice.setWordWrap(True)
+        self.data_notice.setTextFormat(Qt.PlainText)
+        self.data_notice.hide()
+        canvas_layout.addWidget(self.data_notice)
+        canvas_layout.addWidget(self.comparison_panel, 1)
+
         # 左右分割器 — 只留一条发丝线的间隙
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.settings_panel)
-        splitter.addWidget(self.comparison_panel)
+        splitter.addWidget(canvas_workspace)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(1)
         splitter.setSizes([380, 1000])
@@ -79,6 +92,24 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("就绪 — 请选择数据根目录")
         self.appearance.changed.connect(self._apply_appearance)
         self._apply_appearance(self.appearance.dark)
+        self.set_data_available(False)
+
+    def set_data_available(self, available):
+        self.export_button.setEnabled(available)
+        self.refresh_button.setEnabled(bool(self.settings_panel.txt_data_root.text()))
+        self.open_button.setObjectName("" if available else "primaryAction")
+        self.export_button.setObjectName("primaryAction" if available else "")
+        for button in (self.open_button, self.export_button):
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def show_data_issues(self, issues):
+        self.data_notice.setVisible(bool(issues))
+        # Keep the full list discoverable without letting many missing methods
+        # consume the image canvas.
+        self.data_notice.setText("\n".join(issues[:2]) +
+                                 (f"\n另有 {len(issues) - 2} 项，悬停查看详情" if len(issues) > 2 else ""))
+        self.data_notice.setToolTip("\n".join(issues))
 
     # ---- 顶部统一工具栏 ----
     def _build_toolbar(self):

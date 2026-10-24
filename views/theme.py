@@ -1,4 +1,4 @@
-"""Apple-style appearance: one geometry, two colour palettes.
+"""Neutral comparison workspace: one geometry, two colour palettes.
 
 The stylesheet below is a ``string.Template``. Geometry (radii, padding,
 metrics) is written once; only the ``$token`` colours differ between the light
@@ -9,8 +9,8 @@ from string import Template
 
 from PyQt5.QtGui import QColor, QFont, QFontDatabase
 
-# Radii, in the spirit of macOS: small controls 6, containers 10, panels 12.
-RADIUS_CONTROL = 6
+# Compact controls; preserve the sidebar's grouped layout.
+RADIUS_CONTROL = 4
 RADIUS_CARD = 10
 
 # Latin first, CJK second: Qt falls through per glyph, so Chinese picks up
@@ -23,8 +23,10 @@ _CJK_FACES = ("PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic
 
 def _families():
     available = set(QFontDatabase().families())
-    stack = [f for f in _LATIN_FACES if f in available][:1]
-    stack += [f for f in _CJK_FACES if f in available][:1]
+    # A CJK UI face also supplies Latin glyphs and avoids a serif fallback in
+    # Chinese headings when the requested weight is not available in Segoe.
+    stack = [f for f in _CJK_FACES if f in available][:1]
+    stack += [f for f in _LATIN_FACES if f in available][:1]
     return stack
 
 
@@ -65,11 +67,11 @@ def typography_stylesheet():
 # Palettes
 # ---------------------------------------------------------------------------
 LIGHT = {
-    "window": "#e6e6e9",
-    "toolbar": "#f5f5f7",
-    "sidebar": "rgba(250, 250, 252, 170)",
+    "window": "#f3f4f6",
+    "toolbar": "#f3f4f6",
+    "sidebar": "#f3f4f6",
     "canvas": "#ffffff",
-    "card": "rgba(255, 255, 255, 235)",
+    "card": "#f3f4f6",
     "control": "#ffffff",
     "control_hover": "#f4f4f6",
     "control_press": "#e9e9ec",
@@ -80,13 +82,13 @@ LIGHT = {
     "image_bed": "#f2f2f4",
     "text": "#1d1d1f",
     "text_2": "#6e6e73",
-    "text_3": "#8e8e93",
+    "text_3": "#6f737a",
     "text_off": "#b4b4ba",
     "line": "rgba(0, 0, 0, 26)",
     "border": "#d4d4d9",
     "border_soft": "rgba(0, 0, 0, 20)",
-    "accent": "#007aff",
-    "accent_hover": "#0a6fe4",
+    "accent": "#2766b1",
+    "accent_hover": "#205a9f",
     "accent_press": "#005ec4",
     "on_accent": "#ffffff",
     "accent_off": "#a8d2ff",
@@ -98,9 +100,9 @@ LIGHT = {
 DARK = {
     "window": "#1c1c1e",
     "toolbar": "#282829",
-    "sidebar": "rgba(46, 46, 49, 175)",
+    "sidebar": "#282b30",
     "canvas": "#1e1e20",
-    "card": "rgba(52, 52, 55, 215)",
+    "card": "#282b30",
     "control": "#3a3a3c",
     "control_hover": "#464648",
     "control_press": "#525254",
@@ -111,13 +113,13 @@ DARK = {
     "image_bed": "#2a2a2c",
     "text": "#f2f2f7",
     "text_2": "#a1a1a6",
-    "text_3": "#8e8e93",
+    "text_3": "#a6abb3",
     "text_off": "#5f5f63",
     "line": "rgba(255, 255, 255, 30)",
     "border": "#4b4b4e",
     "border_soft": "rgba(255, 255, 255, 24)",
-    "accent": "#0a84ff",
-    "accent_hover": "#3b9bff",
+    "accent": "#2e70bc",
+    "accent_hover": "#367fce",
     "accent_press": "#0069d9",
     "on_accent": "#ffffff",
     "accent_off": "rgba(10, 132, 255, 90)",
@@ -165,6 +167,8 @@ QWidget#appHeader { background: $toolbar; border: none;
 QWidget#glassSidebar { background: $sidebar; border: none;
     border-right: 1px solid $line; }
 QWidget#glassCanvas { background: $canvas; border: none; }
+QWidget#canvasWorkspace { background: $canvas; }
+QLabel#dataNotice { background: $toolbar; color: $danger; padding: 8px 16px; }
 QWidget#settingsContent, QWidget#emptyCanvas { background: transparent; }
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
@@ -176,8 +180,8 @@ QLabel#rowLabel { color: $text; }
 QLabel#emptyTitle { font-size: 22px; font-weight: 600; }
 QLabel#emptyDescription { color: $text_2; font-size: 13px; }
 QLabel#interactionHint { color: $text_3; padding-top: 6px; }
-QLabel[typography="method"] { font-size: 12px; font-weight: 600; color: $text; }
-QLabel[typography="caption"] { font-size: 11px; font-weight: 600; color: $text_2; }
+QLabel[typography="method"] { font-size: 13px; font-weight: 600; color: $text; }
+QLabel[typography="caption"] { font-size: 12px; color: $text_2; }
 QLabel:disabled { color: $text_off; }
 
 /* ---- grouped cards -------------------------------------------------- */

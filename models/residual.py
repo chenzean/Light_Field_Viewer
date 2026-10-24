@@ -21,14 +21,15 @@ def compute_residual(img: np.ndarray, ref: np.ndarray) -> np.ndarray:
     返回:
         单通道残差图, shape=(H, W), dtype=float32, 值域 [0, 1]
     """
-    # 确保尺寸一致
-    h = min(img.shape[0], ref.shape[0])
-    w = min(img.shape[1], ref.shape[1])
-    img_crop = img[:h, :w].astype(np.float32) / 255.0
-    ref_crop = ref[:h, :w].astype(np.float32) / 255.0
+    if img.shape != ref.shape:
+        raise ValueError(f"残差要求图像尺寸一致，当前为 {img.shape} 和 {ref.shape}")
+    if img.ndim != 3 or img.shape[2] != 3 or img.size == 0:
+        raise ValueError("残差输入必须为非空 RGB 图像 (H, W, 3)")
+    img_float = img.astype(np.float32) / 255.0
+    ref_float = ref.astype(np.float32) / 255.0
 
     # 计算各通道绝对差值的均值
-    diff = np.mean(np.abs(img_crop - ref_crop), axis=2)
+    diff = np.mean(np.abs(img_float - ref_float), axis=2)
     return np.clip(diff, 0.0, 1.0).astype(np.float32)
 
 

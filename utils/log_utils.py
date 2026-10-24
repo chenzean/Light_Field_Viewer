@@ -3,10 +3,18 @@
 """
 
 import os
+import json
 from datetime import datetime
 
 
-def write_export_log(filepath: str, params: dict):
+def write_export_manifest(filepath, manifest: dict):
+    """保存可复现的参数、实际输入来源与每个输出/失败项。"""
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2, allow_nan=False)
+        f.write('\n')
+
+
+def write_export_log(filepath: str, params: dict, manifest=None):
     """将导出参数写入日志文件。
 
     参数:
@@ -26,6 +34,8 @@ def write_export_log(filepath: str, params: dict):
         f.write(f"  数据根目录:   {params.get('data_root', 'N/A')}\n")
         f.write(f"  导出目录:     {params.get('export_dir', 'N/A')}\n")
         f.write(f"  可视化模式:   {params.get('vis_mode', 'sai')}\n")
+        f.write(f"  数据类型:     {params.get('mode', 'N/A')}\n")
+        f.write(f"  帧对应方式:   {(manifest or {}).get('frame_alignment', params.get('frame_alignment', 'name'))}\n")
         f.write(f"  角度分辨率:   {params.get('angular_u', '?')} x {params.get('angular_v', '?')}\n")
         f.write(f"  场景:         {params.get('scene', 'N/A')}\n")
         f.write(f"  帧索引:       {params.get('frame_index', 'N/A')}\n")
@@ -51,4 +61,14 @@ def write_export_log(filepath: str, params: dict):
         f.write(f"  空间位置:     {params.get('epi_spatial_pos', 'N/A')}\n")
         f.write(f"  裁剪范围:     {params.get('epi_crop_start', 'N/A')} ~ {params.get('epi_crop_end', 'N/A')}\n")
         f.write(f"  高度拉伸:     {params.get('epi_stretch', 'N/A')}x\n")
+        if manifest is not None:
+            f.write("\n【导出结果】\n")
+            f.write(f"  状态: {manifest['status']}\n")
+            f.write(f"  成功图像数: {manifest['image_count']}\n")
+            f.write(f"  全图残差 vmax: {manifest['residual']['vmax']}\n")
+            f.write(f"  残差公式: {manifest['residual']['formula']}\n")
+            f.write("  完整来源、参数和文件清单: manifest.json\n")
+            for issue in manifest['issues']:
+                f.write(f"  {issue['method'] or '批次'} / {issue['stage']} / "
+                        f"{issue['status']}: {issue['reason']}\n")
         f.write("\n" + "=" * 60 + "\n")

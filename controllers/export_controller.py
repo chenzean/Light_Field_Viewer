@@ -1,306 +1,280 @@
-"""
-导出控制器 — 保存标注图、裁剪图、EPI 到四个文件夹 + 日志
-"""
+"""导出当前对比；每个批次独立保存图像、参数和来源清单。"""
 
-import os
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
 import numpy as np
 from PIL import Image
 
-from models.rect_annotator import (
-    draw_multiple_rectangles, crop_region, crop_with_border
-)
-from models.epi_extractor import (
-    horizontal_epi, vertical_epi, crop_epi, draw_epi_region
-)
-from models.residual import (
-    compute_residual, residual_to_colormap, generate_colorbar
-)
+from models.rect_annotator import draw_multiple_rectangles, crop_with_border
+from models.epi_extractor import extract_epi, crop_epi, draw_epi_region
+from models.residual import compute_residual, residual_to_colormap, generate_colorbar
 from utils.image_utils import ensure_rgb, scale_epi
-from utils.log_utils import write_export_log
+from utils.log_utils import write_export_log, write_export_manifest
 import config as cfg
 
 
 class ExportController:
-    """导出控制器。"""
+    """保留可直接调用的 _export_sai/_export_mli，返回成功写出的图像数量。"""
 
     def __init__(self, app_controller):
         self.app = app_controller
+        self.last_manifest = None
 
     def export(self):
-        """执行导出。"""
-        params = self.app.get_export_params()
-        export_dir = params['export_dir']
+        self.last_manifest = None
+        params = deepcopy(self.app.get_export_params())
+        status = self.app.window.statusBar()
+        if not params.get('export_dir'):
+            status.showMessage("错误: 未设置导出目录")
+            return None
+        if not params.get('methods') or not params.get('scene'):
+            status.showMessage("无法导出: 请先载入场景并选择方法")
+            return None
 
-        if not export_dir:
-            self.app.window.statusBar().showMessage("错误: 未设置导出目录")
-            return
+        root = Path(params['export_dir']).resolve()
+        batch = root / (datetime.now().strftime('export_%Y%m%d_%H%M%S_') + uuid4().hex[:8])
+        try:
+            batch.mkdir(parents=True, exist_ok=False)
+        except OSError as error:
+            status.showMessage(f"无法创建导出目录: {error}")
+            return None
 
-        vis_mode = params.get('vis_mode', 'sai')
-        if vis_mode == 'mli':
+        params['export_root'] = str(root)
+        params['export_dir'] = str(batch)
+        status.showMessage(f"正在导出: {batch}")
+        if params.get('vis_mode', 'sai') == 'mli':
             count = self._export_mli(params)
         else:
             count = self._export_sai(params)
 
-        # ---- 写日志 ----
-        log_path = os.path.join(export_dir, cfg.EXPORT_LOG_FILENAME)
-        write_export_log(log_path, params)
+        try:
+            write_export_log(batch / cfg.EXPORT_LOG_FILENAME, params, self.last_manifest)
+        except OSError as error:
+            self._issue(None, 'log_output', 'failed', str(error))
+            self.last_manifest['status'] = 'partial' if count else 'failed'
+        try:
+            write_export_manifest(batch / 'manifest.json', self.last_manifest)
+        except OSError as error:
+            status.showMessage(f"导出未完整完成: 已写出 {count} 张图像，但记录保存失败: {error}")
+            return str(batch)
 
-        self.app.window.statusBar().showMessage(
-            f"导出完成! 共保存 {count} 张图像到 {export_dir}")
+        issues = self.last_manifest['issues']
+        if issues:
+            result = "部分导出" if count else "导出失败"
+            first = issues[0]
+            status.showMessage(
+                f"{result}: 保存 {count} 张，{len(issues)} 项跳过或失败；"
+                f"{first['method'] or '批次'}: {first['reason']}。详情: {batch / 'manifest.json'}")
+        else:
+            status.showMessage(f"导出完成: 保存 {count} 张图像到 {batch}")
+        return str(batch)
 
     def _export_sai(self, params) -> int:
-        """SAI 模式导出。"""
-        export_dir = params['export_dir']
-        methods = params['methods']
-        rects = params['rects']
-        scene = params['scene']
-        frame_index = params['frame_index']
-        u = params['u']
-        v = params['v']
-        export_dpi = params.get('export_dpi', 150)
-        residual_enabled = params.get('residual_enabled', False)
-
-        dir_original = os.path.join(export_dir, cfg.EXPORT_DIR_ORIGINAL)
-        dir_annotated = os.path.join(export_dir, cfg.EXPORT_DIR_RECT_ANNOTATED)
-        dir_zoom = os.path.join(export_dir, cfg.EXPORT_DIR_ZOOM_CROP)
-        dir_epi_full = os.path.join(export_dir, cfg.EXPORT_DIR_EPI_FULL)
-        dir_epi_crop = os.path.join(export_dir, cfg.EXPORT_DIR_EPI_CROP)
-        dir_res_ann = os.path.join(export_dir, cfg.EXPORT_DIR_RESIDUAL_ANNOTATED)
-        dir_res_crop = os.path.join(export_dir, cfg.EXPORT_DIR_RESIDUAL_CROP)
-
-        count = 0
-
-        # 预加载 GT + 计算全局 vmax (用于残差)
-        gt_sai = None
-        global_vmax = 0.0
-        if residual_enabled and 'Ground_Truth' in methods:
-            gt_sai = self.app.lf_data.load_sai(
-                'Ground_Truth', scene, frame_index, u, v)
-            if gt_sai is not None:
-                gt_sai = ensure_rgb(gt_sai)
-                global_vmax = self._compute_global_vmax_sai(
-                    methods, scene, frame_index, u, v, gt_sai)
-
-        for method in methods:
-            sai = self.app.lf_data.load_sai(method, scene, frame_index, u, v)
-            if sai is None:
-                continue
-            sai = ensure_rgb(sai)
-
-            base = f"{method}_{scene}_f{frame_index}_{u}_{v}"
-
-            # ---- 0. 原始 SAI ----
-            save_path = os.path.join(dir_original, method, f"{base}.png")
-            self._save_image(sai, save_path)
-            count += 1
-
-            # ---- 1. 带框 + EPI 标记线 ----
-            annotated = draw_multiple_rectangles(sai, rects) if rects else sai.copy()
-            if params['epi_enabled']:
-                annotated = draw_epi_region(
-                    annotated,
-                    params['epi_spatial_pos'],
-                    params['epi_crop_start'],
-                    params['epi_crop_end'],
-                    params['epi_orientation'],
-                    line_color=(0, 0, 255),
-                    thickness=2)
-            save_path = os.path.join(dir_annotated, method, f"{base}.png")
-            self._save_image(annotated, save_path)
-            count += 1
-
-            # ---- 2. 局部放大: 从原图裁剪并画框 ----
-            for i, r in enumerate(rects):
-                crop = crop_with_border(
-                    sai, r['x'], r['y'], r['w'], r['h'],
-                    r['color'], r['thickness'])
-                save_path = os.path.join(dir_zoom, method,
-                                         f"{base}_rect{i+1}.png")
-                self._save_image(crop, save_path)
-                count += 1
-
-            # ---- 残差: 全图标注 + 局部裁剪 (GT 跳过) ----
-            if residual_enabled and gt_sai is not None \
-                    and method != 'Ground_Truth':
-                res_full = compute_residual(sai, gt_sai)
-                res_colored = residual_to_colormap(res_full, vmax=global_vmax)
-                # 全图残差 + 画框
-                res_annotated = draw_multiple_rectangles(res_colored, rects) \
-                    if rects else res_colored.copy()
-                save_path = os.path.join(dir_res_ann, method,
-                                         f"{base}_residual.png")
-                self._save_image(res_annotated, save_path)
-                count += 1
-
-                # 局部残差裁剪并画框
-                for i, r in enumerate(rects):
-                    res_crop = crop_with_border(
-                        res_colored, r['x'], r['y'], r['w'], r['h'],
-                        r['color'], r['thickness'])
-                    save_path = os.path.join(dir_res_crop, method,
-                                             f"{base}_rect{i+1}_residual.png")
-                    self._save_image(res_crop, save_path)
-                    count += 1
-
-            # ---- 3 & 4. EPI ----
-            if params['epi_enabled']:
-                lf = self.app._get_light_field(method)
-                if lf is not None:
-                    orient = params['epi_orientation']
-                    ang_idx = params['epi_angular_idx'] - 1
-                    spatial_pos = params['epi_spatial_pos']
-                    ang_idx = max(0, min(ang_idx, lf.shape[0] - 1))
-
-                    if orient == 'horizontal':
-                        spatial_pos = max(0, min(spatial_pos, lf.shape[2] - 1))
-                        epi_full_arr = horizontal_epi(lf, ang_idx, spatial_pos)
-                    else:
-                        spatial_pos = max(0, min(spatial_pos, lf.shape[3] - 1))
-                        epi_full_arr = vertical_epi(lf, ang_idx, spatial_pos)
-
-                    epi_s = scale_epi(epi_full_arr, params['epi_stretch'])
-                    save_path = os.path.join(dir_epi_full, method,
-                                             f"{base}_{orient}_epi.png")
-                    self._save_image(epi_s, save_path)
-                    count += 1
-
-                    epi_c = crop_epi(epi_full_arr, params['epi_crop_start'],
-                                     params['epi_crop_end'])
-                    epi_cs = scale_epi(epi_c, params['epi_stretch'])
-                    save_path = os.path.join(dir_epi_crop, method,
-                                             f"{base}_{orient}_epi_crop.png")
-                    self._save_image(epi_cs, save_path)
-                    count += 1
-
-        # ---- 保存全局颜色条 ----
-        if residual_enabled and gt_sai is not None and global_vmax > 0:
-            cb_arr = generate_colorbar(global_vmax, dpi=export_dpi)
-            save_path = os.path.join(dir_res_ann, "colorbar.png")
-            self._save_image(cb_arr, save_path)
-            count += 1
-
-        return count
-
-    def _compute_global_vmax_sai(self, methods, scene, frame_index, u, v,
-                                 gt_sai) -> float:
-        """计算 SAI 模式下所有非 GT 方法全图残差的全局最大值。"""
-        vmax = 0.0
-        for method in methods:
-            if method == 'Ground_Truth':
-                continue
-            sai = self.app.lf_data.load_sai(method, scene, frame_index, u, v)
-            if sai is None:
-                continue
-            sai = ensure_rgb(sai)
-            res = compute_residual(sai, gt_sai)
-            vmax = max(vmax, float(res.max()))
-        return vmax
+        return self._export_images(params, 'sai')
 
     def _export_mli(self, params) -> int:
-        """MLI 模式导出。"""
-        export_dir = params['export_dir']
-        methods = params['methods']
-        rects = params['rects']
-        scene = params['scene']
-        frame_index = params['frame_index']
-        mode = params['mode']
-        export_dpi = params.get('export_dpi', 150)
-        residual_enabled = params.get('residual_enabled', False)
+        return self._export_images(params, 'mli')
 
-        dir_original = os.path.join(export_dir, "00_original_mli")
-        dir_annotated = os.path.join(export_dir, "01_rect_annotated_mli")
-        dir_zoom = os.path.join(export_dir, cfg.EXPORT_DIR_ZOOM_CROP)
-        dir_res_ann = os.path.join(export_dir, cfg.EXPORT_DIR_RESIDUAL_ANNOTATED)
-        dir_res_crop = os.path.join(export_dir, cfg.EXPORT_DIR_RESIDUAL_CROP)
+    def _export_images(self, params, vis_mode):
+        self.last_manifest = {
+            'schema_version': 1,
+            'app_version': cfg.VERSION,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'parameters': deepcopy(dict(params, vis_mode=vis_mode)),
+            'frame_alignment': getattr(self.app.lf_data, 'frame_alignment', 'name'),
+            'residual': {
+                'enabled': params.get('residual_enabled', False),
+                'formula': 'mean_c(abs(float32(image)/255 - float32(Ground_Truth)/255))',
+                'reference_method': 'Ground_Truth',
+                'scope': 'maximum over full images of valid selected non-reference methods',
+                'colormap': 'jet', 'vmin': 0.0, 'vmax': None,
+                'display_vmax': None, 'methods': [],
+            },
+            'methods': {method: {'source': None, 'outputs': [], 'issues': []}
+                        for method in params['methods']},
+            'outputs': [], 'issues': [],
+        }
+        images = {}
+        data = self.app.lf_data
+        for method in params['methods']:
+            try:
+                self._record_source(method, params, vis_mode)
+                if vis_mode == 'sai':
+                    image = data.load_sai(method, params['scene'], params['frame_index'],
+                                          params['u'], params['v'])
+                else:
+                    image = data.load_mli(method, params['scene'], params['frame_index'],
+                                          params['mode'])
+                if image is None:
+                    self._issue(method, 'load', 'skipped', '缺少当前场景、帧或视角的图像')
+                    continue
+                images[method] = ensure_rgb(image)
+                self.last_manifest['methods'][method]['image_shape'] = list(images[method].shape)
+            except (OSError, ValueError) as error:
+                self._issue(method, 'load', 'failed', str(error))
 
-        count = 0
+        # 一次读取后计算统一色标，避免同一批次两次读盘期间源文件变化。
+        residuals = {}
+        if params.get('residual_enabled', False):
+            reference = images.get('Ground_Truth')
+            for method, image in images.items():
+                if method == 'Ground_Truth':
+                    continue
+                if reference is None:
+                    self._issue(method, 'residual', 'skipped', '未选择或无法读取 Ground_Truth，未生成残差')
+                    continue
+                try:
+                    residuals[method] = compute_residual(image, reference)
+                except ValueError as error:
+                    self._issue(method, 'residual', 'failed', str(error))
+        vmax = max((float(residual.max()) for residual in residuals.values()), default=0.0)
+        if residuals:
+            self.last_manifest['residual'].update(
+                vmax=vmax, display_vmax=max(vmax, 1e-12), methods=list(residuals))
 
-        # 预加载 GT + 计算全局 vmax
-        gt_mli = None
-        global_vmax = 0.0
-        if residual_enabled and 'Ground_Truth' in methods:
-            gt_mli = self.app.lf_data.load_mli(
-                'Ground_Truth', scene, frame_index, mode)
-            if gt_mli is not None:
-                gt_mli = ensure_rgb(gt_mli)
-                global_vmax = self._compute_global_vmax_mli(
-                    methods, scene, frame_index, mode, gt_mli)
+        for method, image in images.items():
+            suffix = f"{params['u']}_{params['v']}" if vis_mode == 'sai' else 'mli'
+            base = f"{method}_{params['scene']}_f{params['frame_index']}_{suffix}"
+            epi = None
+            if vis_mode == 'sai' and params.get('epi_enabled', False):
+                try:
+                    epi = self._load_epi(method, params)
+                except (OSError, ValueError) as error:
+                    self._issue(method, 'epi', 'failed', str(error))
 
-        for method in methods:
-            mli = self.app.lf_data.load_mli(method, scene, frame_index, mode)
-            if mli is None:
-                continue
-            mli = ensure_rgb(mli)
+            original_dir = cfg.EXPORT_DIR_ORIGINAL if vis_mode == 'sai' else '00_original_mli'
+            annotated_dir = cfg.EXPORT_DIR_RECT_ANNOTATED if vis_mode == 'sai' else '01_rect_annotated_mli'
+            try:
+                self._write_output(image, params, original_dir, method, base + '.png', 'original')
+                annotated = draw_multiple_rectangles(image, params['rects'])
+                # 蓝线表示请求的采样位置，与完整光场是否可用于 EPI 独立。
+                if vis_mode == 'sai' and params.get('epi_enabled', False):
+                    annotated = draw_epi_region(
+                        annotated, params['epi_spatial_pos'], params['epi_crop_start'],
+                        params['epi_crop_end'], params['epi_orientation'], thickness=2)
+                self._write_output(annotated, params, annotated_dir, method, base + '.png', 'annotated')
+            except (OSError, ValueError) as error:
+                self._issue(method, 'image_output', 'failed', str(error))
+            self._write_roi_crops(image, params, cfg.EXPORT_DIR_ZOOM_CROP,
+                                  method, base, 'crop')
 
-            base = f"{method}_{scene}_f{frame_index}_mli"
+            if method in residuals:
+                try:
+                    colored = residual_to_colormap(residuals[method], vmax=vmax)
+                    annotated = draw_multiple_rectangles(colored, params['rects'])
+                    self._write_output(annotated, params, cfg.EXPORT_DIR_RESIDUAL_ANNOTATED,
+                                       method, f'{base}_residual.png', 'residual')
+                    self._write_roi_crops(colored, params, cfg.EXPORT_DIR_RESIDUAL_CROP,
+                                          method, base, 'residual_crop')
+                except (OSError, ValueError) as error:
+                    self._issue(method, 'residual_output', 'failed', str(error))
 
-            # ---- 0. 原始 MLI ----
-            save_path = os.path.join(dir_original, method, f"{base}.png")
-            self._save_image(mli, save_path)
-            count += 1
+            if epi is not None:
+                try:
+                    stretch = params.get('epi_stretch', 1)
+                    orient = params['epi_orientation']
+                    self._write_output(scale_epi(epi, stretch), params, cfg.EXPORT_DIR_EPI_FULL,
+                                       method, f'{base}_{orient}_epi.png', 'epi_full')
+                    cropped = crop_epi(epi, params['epi_crop_start'], params['epi_crop_end'])
+                    self._write_output(scale_epi(cropped, stretch), params, cfg.EXPORT_DIR_EPI_CROP,
+                                       method, f'{base}_{orient}_epi_crop.png', 'epi_crop')
+                except (OSError, ValueError) as error:
+                    self._issue(method, 'epi_output', 'failed', str(error))
 
-            # ---- 1. 带框 ----
-            annotated = draw_multiple_rectangles(mli, rects) if rects else mli.copy()
-            save_path = os.path.join(dir_annotated, method, f"{base}.png")
-            self._save_image(annotated, save_path)
-            count += 1
+        if residuals:
+            try:
+                # vmax=0 也保存色标；manifest 同时记录真实值与显示用 epsilon。
+                colorbar = generate_colorbar(vmax, dpi=params.get('export_dpi', 150))
+                self._write_output(colorbar, params, cfg.EXPORT_DIR_RESIDUAL_ANNOTATED,
+                                   None, 'colorbar.png', 'colorbar')
+            except (OSError, ValueError) as error:
+                self._issue(None, 'colorbar_output', 'failed', str(error))
 
-            # ---- 2. 局部放大: 从原图裁剪并画框 ----
-            for i, r in enumerate(rects):
-                crop = crop_with_border(
-                    mli, r['x'], r['y'], r['w'], r['h'],
-                    r['color'], r['thickness'])
-                save_path = os.path.join(dir_zoom, method,
-                                         f"{base}_rect{i+1}.png")
-                self._save_image(crop, save_path)
-                count += 1
-
-            # ---- 残差: 全图标注 + 局部裁剪 (GT 跳过) ----
-            if residual_enabled and gt_mli is not None \
-                    and method != 'Ground_Truth':
-                res_full = compute_residual(mli, gt_mli)
-                res_colored = residual_to_colormap(res_full, vmax=global_vmax)
-                res_annotated = draw_multiple_rectangles(res_colored, rects) \
-                    if rects else res_colored.copy()
-                save_path = os.path.join(dir_res_ann, method,
-                                         f"{base}_residual.png")
-                self._save_image(res_annotated, save_path)
-                count += 1
-
-                for i, r in enumerate(rects):
-                    res_crop = crop_with_border(
-                        res_colored, r['x'], r['y'], r['w'], r['h'],
-                        r['color'], r['thickness'])
-                    save_path = os.path.join(dir_res_crop, method,
-                                             f"{base}_rect{i+1}_residual.png")
-                    self._save_image(res_crop, save_path)
-                    count += 1
-
-        # ---- 保存全局颜色条 ----
-        if residual_enabled and gt_mli is not None and global_vmax > 0:
-            cb_arr = generate_colorbar(global_vmax, dpi=export_dpi)
-            save_path = os.path.join(dir_res_ann, "colorbar.png")
-            self._save_image(cb_arr, save_path)
-            count += 1
-
+        for entry in self.last_manifest['methods'].values():
+            if entry['outputs']:
+                entry['status'] = 'partial' if entry['issues'] else 'complete'
+            else:
+                entry['status'] = ('failed' if any(i['status'] == 'failed' for i in entry['issues'])
+                                   else 'skipped')
+        count = len(self.last_manifest['outputs'])
+        self.last_manifest['image_count'] = count
+        self.last_manifest['status'] = ('failed' if not count else
+                                       'partial' if self.last_manifest['issues'] else 'complete')
         return count
 
-    def _compute_global_vmax_mli(self, methods, scene, frame_index, mode,
-                                 gt_mli) -> float:
-        """计算 MLI 模式下所有非 GT 方法全图残差的全局最大值。"""
-        vmax = 0.0
-        for method in methods:
-            if method == 'Ground_Truth':
-                continue
-            mli = self.app.lf_data.load_mli(method, scene, frame_index, mode)
-            if mli is None:
-                continue
-            mli = ensure_rgb(mli)
-            res = compute_residual(mli, gt_mli)
-            vmax = max(vmax, float(res.max()))
-        return vmax
+    def _record_source(self, method, params, vis_mode):
+        resolver = getattr(self.app.lf_data, 'resolve_' + vis_mode + '_path', None)
+        if resolver is None:
+            return
+        args = (method, params['scene'], params['frame_index'])
+        path = (resolver(*args, params['u'], params['v']) if vis_mode == 'sai'
+                else resolver(*args, params['mode']))
+        if path is not None:
+            source = Path(path).resolve()
+            self.last_manifest['methods'][method]['source'] = {
+                'path': str(source), 'file_name': source.name,
+                'frame_name': source.parent.name if vis_mode == 'sai' else source.stem,
+            }
 
-    def _save_image(self, arr: np.ndarray, path: str):
-        """保存 numpy 数组为 PNG 图像。"""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+    def _load_epi(self, method, params):
+        data = self.app.lf_data
+        resolver = getattr(data, 'resolve_sai_path', None)
+        if resolver is not None:
+            self.last_manifest['methods'][method]['epi_sources'] = [
+                {'u': u, 'v': v, 'path': resolver(method, params['scene'], params['frame_index'], u, v)}
+                for u in range(1, params['angular_u'] + 1)
+                for v in range(1, params['angular_v'] + 1)
+            ]
+        lf = data.load_light_field(method, params['scene'], params['frame_index'],
+                                   params['angular_u'], params['angular_v'])
+        if lf is None:
+            raise ValueError('缺少当前帧的完整光场，未生成 EPI')
+        return extract_epi(lf, params['epi_orientation'], params['epi_angular_idx'],
+                           params['epi_spatial_pos'])
+
+    def _issue(self, method, stage, status, reason):
+        issue = dict(method=method, stage=stage, status=status, reason=reason)
+        self.last_manifest['issues'].append(issue)
+        if method is not None:
+            self.last_manifest['methods'][method]['issues'].append(issue)
+
+    def _write_roi_crops(self, image, params, category, method, base, kind):
+        """逐个写出 ROI；一个无交集选区不能阻止其余选区导出。"""
+        height, width = image.shape[:2]
+        suffix = '_residual' if kind == 'residual_crop' else ''
+        for index, rect in enumerate(params['rects'], 1):
+            x, y, w, h = (rect[key] for key in ('x', 'y', 'w', 'h'))
+            bounds = f'ROI {index} (x={x}, y={y}, w={w}, h={h})'
+            # 与 crop_with_border 的扩展/裁剪范围一致，也避免负切片索引反向取图。
+            pad = max(0, rect['thickness'] - 1)
+            if (min(width, x + w + pad) <= max(0, x - pad)
+                    or min(height, y + h + pad) <= max(0, y - pad)):
+                self._issue(method, kind, 'skipped',
+                            f'{bounds} 裁剪范围与 {width}×{height} 图像无交集，未导出')
+                continue
+            try:
+                crop = crop_with_border(image, **rect)
+                self._write_output(crop, params, category, method,
+                                   f'{base}_rect{index}{suffix}.png', kind)
+            except (OSError, ValueError) as error:
+                self._issue(method, kind, 'failed', f'{bounds}: {error}')
+
+    def _write_output(self, image, params, category, method, filename, kind):
+        relative = Path(category) / method / filename if method is not None else Path(category) / filename
+        path = Path(params['export_dir']) / relative
+        self._save_image(image, path)
+        output = {'path': str(path.resolve()), 'relative_path': relative.as_posix(),
+                  'method': method, 'kind': kind}
+        self.last_manifest['outputs'].append(output)
+        if method is not None:
+            self.last_manifest['methods'][method]['outputs'].append(output)
+
+    def _save_image(self, arr: np.ndarray, path):
+        if arr.ndim != 3 or arr.shape[2] != 3 or not arr.shape[0] or not arr.shape[1]:
+            raise ValueError(f'无法保存空图像或非 RGB 图像: shape={arr.shape}')
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(arr).save(path)

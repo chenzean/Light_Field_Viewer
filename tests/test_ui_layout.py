@@ -78,6 +78,11 @@ class WorkspaceLayoutTests(unittest.TestCase):
         events = []
         self.window.settings_panel.export_requested.connect(lambda: events.append("export"))
         self.window.settings_panel.refresh_requested.connect(lambda: events.append("refresh"))
+        self.assertFalse(self.window.export_button.isEnabled())
+        self.window.export_button.click()
+        self.assertEqual(events, [])
+        self.window.settings_panel.txt_data_root.setText("test data")
+        self.window.set_data_available(True)
         self.window.export_button.click()
         self.window.refresh_button.click()
         self.assertEqual(events, ["export", "refresh"])
@@ -85,6 +90,27 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertTrue(self.window.settings_panel.isHidden())
         self.window.sidebar_button.click()
         self.assertFalse(self.window.settings_panel.isHidden())
+
+    def test_scene_frame_and_view_stay_in_sidebar(self):
+        panel = self.window.settings_panel
+        area = panel.sections.widget(0)
+        controls = [panel.combo_scene, panel.combo_frame, panel.spin_u, panel.spin_v]
+        for control in controls:
+            self.assertTrue(area.isAncestorOf(control))
+            self.assertTrue(control.isVisible())
+        self.window.sidebar_button.click()
+        for control in controls:
+            self.assertFalse(control.isVisible())
+
+    def test_comparison_tab_keeps_original_sidebar_page(self):
+        panel = self.window.settings_panel
+        for page in range(3):
+            panel.sections.setCurrentIndex(page)
+            for comparison in range(3):
+                self.window.comparison_panel.tabs.setCurrentIndex(comparison)
+                self.assertEqual(panel.sections.currentIndex(), page)
+        panel.sections.setCurrentIndex(1)
+        self.assertFalse(panel.grp_epi.isHidden())
 
     def test_dropdown_keyboard_selection(self):
         panel = self.window.settings_panel
@@ -121,6 +147,26 @@ class WorkspaceLayoutTests(unittest.TestCase):
                 self.app.processEvents()
                 area = tabs.widget(index)
                 self.assertLessEqual(area.widget().width(), area.viewport().width())
+
+    def test_header_and_paired_numeric_columns_align(self):
+        panel = self.window.settings_panel
+        comparison = self.window.comparison_panel
+        comparison.set_methods(["Ground_Truth", "A"])
+        for appearance in ("light", "dark"):
+            self.window.appearance.set_mode(appearance)
+            for width, height in ((800, 600), (1500, 940)):
+                with self.subTest(appearance=appearance, window=(width, height)):
+                    self.window.resize(width, height)
+                    panel.sections.setCurrentIndex(1)
+                    self.app.processEvents()
+                    picker = panel.section_buttons.button(0).parentWidget()
+                    self.assertEqual(picker.mapTo(self.window, QPoint()).y(),
+                                     comparison.tabs.tabBar().mapTo(self.window, QPoint()).y())
+                    for position, size in ((panel.spin_rect_x, panel.spin_rect_w),
+                                           (panel.spin_rect_y, panel.spin_rect_h)):
+                        self.assertEqual(position.mapTo(panel, QPoint()).x(),
+                                         size.mapTo(panel, QPoint()).x())
+                        self.assertEqual(position.size(), size.size())
 
 
 if __name__ == "__main__":
